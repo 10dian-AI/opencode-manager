@@ -1,0 +1,49 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-opencode}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-opencode_manager}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    # No published ports: only the app needs to reach the database.
+
+  app:
+    image: ghcr.io/jellyfish-p/opencode-manager:latest
+    # Swap the image for a local build with: docker compose build
+    build:
+      context: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-opencode}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-opencode_manager}
+      POSTGRES_POOL_MAX: ${POSTGRES_POOL_MAX:-20}
+      # Admin login key and optional client API keys, comma or newline separated.
+      ADMIN_KEY: ${ADMIN_KEY:?ADMIN_KEY is required}
+      API_KEYS: ${API_KEYS:-}
+      PROXY_MIN_WORKERS: ${PROXY_MIN_WORKERS:-64}
+      PROXY_MAX_WORKERS: ${PROXY_MAX_WORKERS:-1024}
+      PROXY_QUEUE_LIMIT: ${PROXY_QUEUE_LIMIT:-8192}
+      RISK_CONTROL_CHECK_MODEL: ${RISK_CONTROL_CHECK_MODEL:-glm-5.2}
+    ports:
+      # Host port 3030 -> container port 3000.
+      - "${APP_PORT:-3030}:3000"
+
+volumes:
+  postgres-data:
