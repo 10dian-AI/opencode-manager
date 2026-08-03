@@ -1,7 +1,10 @@
-export type AccountPollKind = 'quota' | 'membership'
+export type AccountPollKind = 'quota' | 'membership' | 'error'
+
+export const ERROR_REFRESH_INTERVAL_MS = 5 * 60 * 1000
 
 export interface PollableAccount {
   id: number
+  status: 'pending' | 'active' | 'error' | 'disabled'
   disabled_reason: string | null
   next_quota_refresh_at: string | null
   auto_enable_at: string | null
@@ -12,6 +15,7 @@ interface PollState {
   version: number
   quota: number | null
   membership: number | null
+  error: number | null
 }
 
 interface PollEntry {
@@ -86,13 +90,15 @@ export class AccountPollSchedule {
   private states = new Map<number, PollState>()
   private heaps: Record<AccountPollKind, MinHeap> = {
     quota: new MinHeap(),
-    membership: new MinHeap()
+    membership: new MinHeap(),
+    error: new MinHeap()
   }
 
   hydrate(accounts: PollableAccount[], now = Date.now()) {
     this.states.clear()
     this.heaps.quota.clear()
     this.heaps.membership.clear()
+    this.heaps.error.clear()
     for (const account of accounts) this.schedule(account, now, true)
   }
 
@@ -100,7 +106,7 @@ export class AccountPollSchedule {
     const previousVersion = this.states.get(account.id)?.version || 0
     const version = previousVersion + 1
     if (account.disabled_reason === 'manual') {
-      this.states.set(account.id, { version, quota: null, membership: null })
+      this.states.set(account.id, { version, quota: null, membership: null, error: null })
       return
     }
 
@@ -111,12 +117,19 @@ export class AccountPollSchedule {
     const quota = rawQuota !== null && (includeOverdue || rawQuota > now) ? rawQuota : null
     const lastSynced = timestamp(account.last_synced_at)
     const membership = lastSynced === null ? now : Math.max(now, lastSynced + MEMBERSHIP_INTERVAL_MS)
-    const state = { version, quota, membership }
+    const error = account.status === 'error'
+      ? lastSynced === null
+        ? now
+        : Math.max(now, lastSynced + ERROR_REFRESH_INTERVAL_MS)
+      : null
+    const state = { version, quota, membership, error }
     this.states.set(account.id, state)
     if (quota !== null) this.heaps.quota.push({ id: account.id, at: quota, version })
     this.heaps.membership.push({ id: account.id, at: membership, version })
+    if (error !== null) this.heaps.error.push({ id: account.id, at: error, version })
     this.compactIfNeeded('quota')
     this.compactIfNeeded('membership')
+    this.compactIfNeeded('error')
   }
 
   remove(id: number) {
