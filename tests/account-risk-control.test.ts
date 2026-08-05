@@ -34,6 +34,7 @@ describe('account risk control', () => {
   test('preserves manual and risk-control disabled states during account refresh', () => {
     expect(isProtectedAccountDisabledReason('manual')).toBe(true)
     expect(isProtectedAccountDisabledReason('risk_control')).toBe(true)
+    expect(isProtectedAccountDisabledReason('auth_expired')).toBe(true)
     expect(isProtectedAccountDisabledReason('quota:weekly')).toBe(false)
     expect(isProtectedAccountDisabledReason(null)).toBe(false)
   })

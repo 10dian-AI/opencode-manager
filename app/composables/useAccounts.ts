@@ -140,23 +140,52 @@ export interface AccountBatchResult extends AccountBatchProgress {
   accounts: Account[]
 }
 
+export interface AccountRefreshSettings {
+  auto_refresh_errors: boolean
+  error_refresh_interval_minutes: number
+}
+
 export function useAccounts() {
   const accounts = useState<Account[]>('accounts', () => [])
   const stats = useState<Stats | null>('stats', () => null)
   const loading = useState('accounts-loading', () => false)
+  const accountRefreshSettings = useState<AccountRefreshSettings | null>(
+    'account-refresh-settings',
+    () => null
+  )
   const requestFetch = useRequestFetch()
 
-  async function fetchAccounts() {
-    loading.value = true
+  function applyAccount(updated: Account) {
+    const index = accounts.value.findIndex(account => account.id === updated.id)
+    if (index >= 0) accounts.value[index] = updated
+  }
+
+  async function fetchAccounts(silent = false) {
+    if (!silent) loading.value = true
     try {
       accounts.value = await requestFetch<Account[]>('/api/accounts')
     } finally {
-      loading.value = false
+      if (!silent) loading.value = false
     }
   }
 
   async function fetchStats() {
     stats.value = await requestFetch<Stats>('/api/stats')
+  }
+
+  async function fetchAccountRefreshSettings() {
+    accountRefreshSettings.value = await requestFetch<AccountRefreshSettings>(
+      '/api/settings/account-refresh'
+    )
+    return accountRefreshSettings.value
+  }
+
+  async function setAutoRefreshErrors(enabled: boolean) {
+    accountRefreshSettings.value = await requestFetch<AccountRefreshSettings>(
+      '/api/settings/account-refresh',
+      { method: 'PATCH', body: { auto_refresh_errors: enabled } }
+    )
+    return accountRefreshSettings.value
   }
 
   async function addAccounts(
@@ -397,6 +426,7 @@ export function useAccounts() {
           { method: 'POST' }
         )
         updatedAccounts.push(result.account)
+        applyAccount(result.account)
         if (result.blocked) blocked++
         return
       }
@@ -406,6 +436,7 @@ export function useAccounts() {
           body: { status: 'disabled' }
         })
         updatedAccounts.push(updated)
+        applyAccount(updated)
         return
       }
       if (action === 'enable') {
@@ -423,6 +454,7 @@ export function useAccounts() {
         false
       )
       updatedAccounts.push(updated)
+      applyAccount(updated)
       if (updated.status === 'error') throw new Error(updated.last_error || 'Account refresh failed')
     }
 
@@ -458,8 +490,11 @@ export function useAccounts() {
     accounts,
     stats,
     loading,
+    accountRefreshSettings,
     fetchAccounts,
     fetchStats,
+    fetchAccountRefreshSettings,
+    setAutoRefreshErrors,
     addAccounts,
     updateAccount,
     fetchAccountAuthCookie,

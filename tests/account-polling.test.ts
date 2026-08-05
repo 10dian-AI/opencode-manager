@@ -87,4 +87,15 @@ describe('account polling schedule', () => {
 
     expect(schedule.takeDue('error', NOW + ERROR_REFRESH_INTERVAL_MS)).toEqual([])
   })
+
+  test('keeps expired cookies out of automatic retry queues', () => {
+    const schedule = new AccountPollSchedule()
+    schedule.hydrate([account(1, {
+      status: 'error',
+      disabled_reason: 'auth_expired'
+    })], NOW)
+
+    expect(schedule.takeDue('error', NOW + ERROR_REFRESH_INTERVAL_MS)).toEqual([])
+    expect(schedule.takeDue('membership', NOW + ERROR_REFRESH_INTERVAL_MS)).toEqual([])
+  })
 })

@@ -1,5 +1,7 @@
 # OpenCode Manager
 
+项目仓库：https://github.com/10dian-AI/opencode-manager
+
 Nuxt UI 全栈号池管理：PostgreSQL 存储账号，通过浏览器 Cookie 自动抓取 OpenCode SSR 页面解析 workspace / 用量。
 
 ## 功能
@@ -10,13 +12,13 @@ Nuxt UI 全栈号池管理：PostgreSQL 存储账号，通过浏览器 Cookie �
 - 解析 workspace、邮箱、滚动/周/月用量、推荐码
 - 单号刷新 / 全部刷新
 - OpenAI 兼容的 `/v1/models`、`/v1/chat/completions`（支持流式透传）
-- 使用内存轮询号池，单次请求只访问一个上游账户，不执行失败重试
-- 自动识别上游风控 AuthError、禁用命中账号，并支持单号或全量风控复检
-- 额度耗尽时自动使用可用推广收益扩充额度
-- 会员账号自动关闭续费，并保留权益至当前订阅周期结束
+- 使用内存轮询号池，单次请求只访问一个上游账户；workspace 页面遇到 408、429、5xx 或网络超时会有限重试
+- 支持单号或全量风控检测；普通代理请求的 401/403 只会清理失效 Key，不再自动判定封禁
+- 支持手动使用推广收益；自动使用默认关闭，可通过环境变量显式开启
+- 支持手动关闭续费；自动关闭续费默认关闭，可通过环境变量显式开启
 - 额度耗尽自动禁用并在窗口释放后恢复，会员过期自动禁用
 - 记录三个额度窗口的绝对刷新节点，按节点自动刷新
-- 同步失败的 `error` 账号每 5 分钟自动重试，恢复后自动退出重试队列
+- 可在「号池」开启或关闭 `error` 账号自动重试，开启后默认每 5 分钟重试一次
 - 非会员筛选与批量删除
 - 按滚动 $12、每周 $30、每月 $60 统计金额
 
@@ -62,17 +64,21 @@ DATABASE_SSL=false
 
 表结构在首次连接时自动创建，使用 advisory lock 避免多实例同时启动时的 DDL 竞争。
 
-代理默认从 64 个可复用流式工作槽开始，根据排队量自动扩容到 1024；服务端每秒检测 CPU 与事件循环延迟，负载过高时自动收缩。等待队列固定为 8192，队列满后直接返回 `503`，防止无限占用内存。可通过环境变量调整：
+代理默认从 4 个可复用流式工作槽开始，根据排队量自动扩容到 32；服务端每秒检测 CPU 与事件循环延迟，负载过高时自动收缩。单个官方账号默认最多同时处理 2 个代理请求，避免少量账号承受过高并发。等待队列固定为 8192，队列满后直接返回 `503`，防止无限占用内存。可通过环境变量调整：
 
 ```bash
-PROXY_MIN_WORKERS=64
-PROXY_MAX_WORKERS=1024
+PROXY_MIN_WORKERS=4
+PROXY_MAX_WORKERS=32
 PROXY_QUEUE_LIMIT=8192
+PROXY_ACCOUNT_CONCURRENCY=2
+# 以下操作会修改官方账号状态，默认关闭
+AUTO_APPLY_REFERRAL_REWARDS=false
+AUTO_CANCEL_SUBSCRIPTION_RENEWAL=false
 # 风控检测使用的最小探测模型（默认 glm-5.2）
 RISK_CONTROL_CHECK_MODEL=glm-5.2
 ```
 
-旧的 `PROXY_WORKERS` 仍可作为最小工作槽数量使用。扩容采用渐进方式，不会一次性创建上千个并发流；CPU 达到 85% 或事件循环延迟达到 200ms 时停止扩容并收缩 25%，空闲 30 秒后也会逐步回落。
+旧的 `PROXY_WORKERS` 仍可作为最小工作槽数量使用。扩容采用渐进方式；CPU 达到 85% 或事件循环延迟达到 200ms 时停止扩容并收缩 25%，空闲 30 秒后也会逐步回落。
 
 ## 开发
 
@@ -136,6 +142,7 @@ bun run dev
 | POST | `/api/accounts/refresh-all` | 刷新全部 |
 | POST | `/api/accounts/:id/risk-control-check` | 单号风控检测，命中后自动禁用 |
 | POST | `/api/accounts/risk-control/check-all` | 检测全部可用或待复检的风控账号 |
+| GET / PATCH | `/api/settings/account-refresh` | 查询 / 设置 error 账号自动重试开关 |
 | GET | `/api/stats` | 统计 |
 | GET | `/api/api-keys` | 对外 API 密钥列表（仅显示掩码） |
 | POST | `/api/api-keys` | 创建对外 API 密钥 |
@@ -182,7 +189,7 @@ docker compose down -v         # 停止并删除数据卷，会清空数据库
 - 数据存放在 `postgres-data` 命名卷
 - 应用以非 root 的 `bun` 用户运行，配置全部走环境变量，不需要挂载 `config.yaml`
 
-默认直接拉取已发布的镜像 `ghcr.io/jellyfish-p/opencode-manager:latest`。想用本地源码构建：
+默认直接拉取已发布的镜像 `ghcr.io/10dian-ai/opencode-manager:latest`。想用本地源码构建：
 
 ```bash
 docker compose up -d --build
@@ -198,7 +205,7 @@ docker run -d \
   -p 3030:3000 \
   -e ADMIN_KEY=your-admin-key \
   -e DATABASE_URL=postgres://opencode:opencode@your-host:5432/opencode \
-  ghcr.io/jellyfish-p/opencode-manager:latest
+  ghcr.io/10dian-ai/opencode-manager:latest
 ```
 
 生产服务也可以使用 Node.js 20–26 启动：

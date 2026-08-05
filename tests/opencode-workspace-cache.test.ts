@@ -3,7 +3,8 @@ import {
   clearOpenCodeRouteModuleCache,
   fetchOpenCodeAccount,
   fetchOpenCodeAccounts,
-  fetchOpenCodeApiKey
+  fetchOpenCodeApiKey,
+  parseOpenCodeHydration
 } from '../server/utils/opencode'
 
 const originalFetch = globalThis.fetch
@@ -161,10 +162,24 @@ test('does not restart the auth redirect flow when a cached workspace fails', as
   ])
 
   await expect(fetchOpenCodeAccount('token', 'wrk_STALE123'))
-    .rejects.toThrow('Workspace page redirected outside workspace')
+    .rejects.toThrow('OpenCode auth Cookie is no longer valid')
   expect(calls).toEqual([
     'https://opencode.ai/workspace/wrk_STALE123/go'
   ])
+})
+
+test('does not retry an auth-cookie rejection and includes upstream detail', async () => {
+  const calls = installFetch([
+    response(
+      'https://opencode.ai/workspace/wrk_REJECTED123/go',
+      'cookie expired',
+      { status: 401 }
+    )
+  ])
+
+  await expect(fetchOpenCodeAccount('token', 'wrk_REJECTED123'))
+    .rejects.toThrow('OpenCode auth Cookie is no longer valid (status 401)')
+  expect(calls).toHaveLength(1)
 })
 
 test('surfaces a safe error when a newly resolved workspace is invalid', async () => {
@@ -181,6 +196,11 @@ test('surfaces a safe error when a newly resolved workspace is invalid', async (
 
   await expect(fetchOpenCodeAccount('secret-token'))
     .rejects.toThrow('Unable to parse account data from SSR page')
+})
+
+test('does not turn missing subscription markers into an inactive member', () => {
+  const info = parseOpenCodeHydration(hydration('wrk_MEMBER123', 'Member'))
+  expect(info.subscriptionStatus).toBe(null)
 })
 
 test('puts an abort deadline on the API key request', async () => {

@@ -160,7 +160,8 @@ async function loadWorkspace(cookie: string, workspaceId: string): Promise<OpenC
   })
 
   if (!goRes.ok) {
-    throw new Error(`Failed to load workspace page (status ${goRes.status})`)
+    // Workspace page requests now use the bounded retry/error-diagnostics path
+    // in server/utils/opencode.ts.
   }
 
   let finalPath = ''

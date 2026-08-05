@@ -15,8 +15,11 @@ type DeleteIntent =
 const {
   accounts,
   loading,
+  accountRefreshSettings,
   fetchAccounts,
   fetchStats,
+  fetchAccountRefreshSettings,
+  setAutoRefreshErrors,
   addAccounts,
   updateAccount,
   fetchAccountAuthCookie,
@@ -65,6 +68,8 @@ const singleRefreshProgress = ref<AccountRefreshProgress | null>(null)
 const deleteIntent = ref<DeleteIntent | null>(null)
 const deleteDialogOpen = ref(false)
 const deleteConfirmLoading = ref(false)
+const autoRefreshSaving = ref(false)
+let statusSyncTimer: ReturnType<typeof setInterval> | null = null
 
 const filteredAccounts = computed(() => {
   return accounts.value.filter((account) => {
@@ -128,7 +133,37 @@ watch(
   }
 )
 
-await Promise.all([fetchAccounts(), fetchStats()])
+await Promise.all([fetchAccounts(), fetchStats(), fetchAccountRefreshSettings()])
+
+onMounted(() => {
+  statusSyncTimer = setInterval(() => {
+    if (loading.value || batchProgress.value || singleRefreshProgress.value) return
+    void Promise.allSettled([fetchAccounts(true), fetchStats()])
+  }, 30_000)
+})
+
+onBeforeUnmount(() => {
+  if (statusSyncTimer) clearInterval(statusSyncTimer)
+})
+
+async function onAutoRefreshErrors(value: boolean) {
+  autoRefreshSaving.value = true
+  try {
+    await setAutoRefreshErrors(value)
+    toast.add({
+      title: value ? '已开启 error 账号自动刷新' : '已关闭 error 账号自动刷新',
+      description: value ? '失败账号每 5 分钟自动重试' : '失败账号将只在手动刷新时重试',
+      color: 'success'
+    })
+  } catch (e: any) {
+    toast.add({
+      title: e?.data?.statusMessage || e?.message || '设置保存失败',
+      color: 'error'
+    })
+  } finally {
+    autoRefreshSaving.value = false
+  }
+}
 
 function resetForm() {
   editCookieRequestGeneration.value++
@@ -340,13 +375,24 @@ async function onAdd() {
 async function onEdit() {
   if (!editing.value) return
   const nextCookie = formCookie.value.trim()
+  const cookieChanged = Boolean(nextCookie && nextCookie !== initialEditCookie.value)
+  const accountId = editing.value.id
   submitting.value = true
   try {
-    await updateAccount(editing.value.id, {
+    await updateAccount(accountId, {
       name: formName.value,
-      ...(nextCookie && nextCookie !== initialEditCookie.value ? { auth_cookie: nextCookie } : {})
+      ...(cookieChanged ? { auth_cookie: nextCookie } : {})
     })
-    toast.add({ title: '账号已更新', color: 'success' })
+    if (cookieChanged) {
+      const refreshed = await refreshAccount(accountId)
+      toast.add({
+        title: refreshed.status === 'active' ? 'Cookie 已更新并验证成功' : 'Cookie 已更新，但同步仍未恢复',
+        description: refreshed.last_error || undefined,
+        color: refreshed.status === 'active' ? 'success' : 'warning'
+      })
+    } else {
+      toast.add({ title: '账号已更新', color: 'success' })
+    }
     openEdit.value = false
     resetForm()
   } catch (e: any) {
@@ -610,7 +656,24 @@ async function copyReferralLink(code: string) {
         <h1 class="text-2xl font-semibold text-highlighted">号池管理</h1>
         <p class="text-sm text-muted">粘贴 auth Cookie 的纯 value，每行一个，自动解析 workspace / 用量</p>
       </div>
-      <div class="flex gap-2">
+      <div class="flex flex-wrap items-center gap-2">
+        <div
+          v-if="accountRefreshSettings"
+          class="flex h-9 items-center gap-2 rounded-md border border-default px-3"
+        >
+          <USwitch
+            :model-value="accountRefreshSettings.auto_refresh_errors"
+            :disabled="autoRefreshSaving"
+            aria-label="自动刷新 error 账号"
+            @update:model-value="onAutoRefreshErrors"
+          />
+          <span class="text-sm text-muted">自动刷新 error</span>
+          <UIcon
+            v-if="autoRefreshSaving"
+            name="i-lucide-loader-circle"
+            class="size-3.5 animate-spin text-muted"
+          />
+        </div>
         <UButton
           icon="i-lucide-shield-check"
           color="neutral"
@@ -847,8 +910,12 @@ async function copyReferralLink(code: string) {
                   {{ account.workspace_id }}
                 </div>
                 <div class="mt-1 flex flex-wrap gap-1">
-                  <UBadge :color="account.subscription_status === 'active' ? 'success' : 'error'" variant="subtle" size="sm">
-                    {{ account.subscription_status === 'active' ? '会员' : '非会员' }}
+                  <UBadge
+                    :color="account.subscription_status === 'active' ? 'success' : account.subscription_status ? 'error' : 'neutral'"
+                    variant="subtle"
+                    size="sm"
+                  >
+                    {{ account.subscription_status === 'active' ? '会员' : account.subscription_status ? '非会员' : '会员状态未知' }}
                   </UBadge>
                   <UBadge :color="account.has_upstream_api_key ? 'info' : 'warning'" variant="subtle" size="sm">
                     {{ account.has_upstream_api_key ? '上游 Key 已同步' : '缺少上游 Key' }}
@@ -868,10 +935,19 @@ async function copyReferralLink(code: string) {
                 </div>
               </td>
               <td class="px-4 py-3">
-                <UBadge :color="statusColor(account.status)" variant="subtle">
-                  {{ account.status }}
+                <UBadge
+                  :key="`${account.id}-${account.status}`"
+                  :color="statusColor(account.status)"
+                  variant="subtle"
+                >
+                  {{ statusLabel(account.status) }}
                 </UBadge>
-                <div v-if="account.disabled_reason" class="mt-1 text-xs text-muted">{{ account.disabled_reason }}</div>
+                <div v-if="account.disabled_reason === 'auth_expired'" class="mt-1 text-xs text-error">
+                  Cookie 已失效，请更新 Cookie
+                </div>
+                <div v-else-if="account.disabled_reason" class="mt-1 text-xs text-muted">
+                  {{ account.disabled_reason }}
+                </div>
                 <div v-if="account.risk_control_detected_at" class="mt-1 text-xs text-error">
                   {{ account.disabled_reason === 'risk_control' ? '风控命中' : '最近风控' }}
                   {{ formatDate(account.risk_control_detected_at) }}

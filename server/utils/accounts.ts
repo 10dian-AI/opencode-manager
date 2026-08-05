@@ -2,13 +2,14 @@ import type { Account, AccountStatus } from './db'
 import { resolveRefreshedAccountEmail } from './account-identity'
 import { AccountOperationQueue } from './account-operation-queue'
 import { AccountPollSchedule } from './account-polling'
+import { getAccountRefreshSettings } from './account-refresh-settings'
 import {
   beginAccountRefreshProgress,
   clearAccountRefreshProgress,
   type AccountRefreshProgressReporter
 } from './account-refresh-progress'
 import { validateAuthCookieValue } from './auth-cookie'
-import type { OpenCodeAccountInfo } from './opencode'
+import { AuthCookieExpiredError, type OpenCodeAccountInfo } from './opencode'
 import { createAccountFetch } from './account-fetch'
 import { ensureAccountIpAssignment } from './ip-pool'
 import {
@@ -31,6 +32,8 @@ const accountPollSchedule = new AccountPollSchedule()
 let accountPollScheduleHydrated = false
 const REFRESH_CONCURRENCY = 4
 const RISK_CONTROL_CHECK_MODEL = process.env.RISK_CONTROL_CHECK_MODEL || 'glm-5.2'
+const AUTO_APPLY_REFERRAL_REWARDS = process.env.AUTO_APPLY_REFERRAL_REWARDS === 'true'
+const AUTO_CANCEL_SUBSCRIPTION_RENEWAL = process.env.AUTO_CANCEL_SUBSCRIPTION_RENEWAL === 'true'
 
 let accountPollScheduleHydration: Promise<void> | null = null
 
@@ -101,7 +104,8 @@ export function updateAccountSettings(
             referral_code: null,
             risk_control_checked_at: null,
             risk_control_detected_at: null,
-            ...(account.disabled_reason === RISK_CONTROL_DISABLED_REASON
+            ...(account.disabled_reason === RISK_CONTROL_DISABLED_REASON ||
+              account.disabled_reason === 'auth_expired'
               ? {
                   status: 'pending' as AccountStatus,
                   disabled_reason: null,
@@ -274,6 +278,7 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
 
     while (
       !options.skipReferralRewards &&
+      AUTO_APPLY_REFERRAL_REWARDS &&
       !isProtectedAccountDisabledReason(account.disabled_reason) &&
       info.subscriptionStatus === 'active' &&
       attemptedRewards.size < 20
@@ -322,7 +327,12 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
     const workspaceId = info.workspaceId || account.workspace_id
     options.progress?.update('subscription', '正在检查订阅与自动续费')
     const subscriptionUpdate: Partial<Account> = {}
-    if (info.subscriptionStatus === 'active' && info.liteSubscriptionId && workspaceId) {
+    if (
+      AUTO_CANCEL_SUBSCRIPTION_RENEWAL &&
+      info.subscriptionStatus === 'active' &&
+      info.liteSubscriptionId &&
+      workspaceId
+    ) {
       const checkedAt = account.subscription_cancel_checked_at
         ? new Date(account.subscription_cancel_checked_at).getTime()
         : 0
@@ -372,27 +382,32 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
     if (workspaceId && !upstreamApiKey) {
       try {
         upstreamApiKey = await fetchOpenCodeApiKey(account.auth_cookie, workspaceId, fetchImpl) || upstreamApiKey
-      } catch {
+      } catch (error) {
+        if (error instanceof AuthCookieExpiredError) throw error
         // Quota and membership refresh must still succeed if the keys page is temporarily unavailable.
       }
     }
     options.progress?.update('finalizing', '正在计算额度并保存账号状态')
     const now = new Date()
     const { rollingResetAt, weeklyResetAt, monthlyResetAt, quota } = quotaFromInfo(info, now)
-    const isMember = info.subscriptionStatus === 'active'
     const currentAccount = (await getAccount(id)) || account
+    const membershipKnown = info.subscriptionStatus !== null
+    const isMember = membershipKnown
+      ? info.subscriptionStatus === 'active'
+      : currentAccount.subscription_status === 'active'
     const protectedDisabledReason = currentAccount.status === 'disabled' &&
+      currentAccount.disabled_reason !== 'auth_expired' &&
       isProtectedAccountDisabledReason(currentAccount.disabled_reason)
       ? currentAccount.disabled_reason
       : null
     const status: AccountStatus = protectedDisabledReason
       ? 'disabled'
-      : !isMember || quota.exhausted.length
+      : (membershipKnown && !isMember) || quota.exhausted.length
         ? 'disabled'
         : 'active'
     const disabledReason = protectedDisabledReason
       ? protectedDisabledReason
-      : !isMember
+      : membershipKnown && !isMember
         ? 'expired'
         : quota.exhausted.length
           ? `quota:${quota.exhausted.join(',')}`
@@ -414,7 +429,7 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
       next_quota_refresh_at: quota.nextRefreshAt,
       quota_refreshed_at: now.toISOString(),
       referral_code: info.referralCode,
-      subscription_status: info.subscriptionStatus,
+      subscription_status: info.subscriptionStatus ?? currentAccount.subscription_status,
       ...subscriptionUpdate,
       upstream_api_key: upstreamApiKey,
       status,
@@ -428,10 +443,16 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     const currentAccount = (await getAccount(id)) || account
+    const cookieExpired = err instanceof AuthCookieExpiredError
     const preserveDisabled = currentAccount.status === 'disabled' &&
       isProtectedAccountDisabledReason(currentAccount.disabled_reason)
     const failedAccount = (await updateAccount(id, {
-      status: preserveDisabled ? 'disabled' : 'error',
+      status: preserveDisabled || cookieExpired ? 'disabled' : 'error',
+      disabled_reason: preserveDisabled
+        ? currentAccount.disabled_reason
+        : cookieExpired
+          ? 'auth_expired'
+          : currentAccount.disabled_reason,
       last_error: currentAccount.disabled_reason === RISK_CONTROL_DISABLED_REASON
         ? currentAccount.last_error || message
         : message,
@@ -481,6 +502,26 @@ export async function markAccountRiskControlled(
   return updated
 }
 
+async function invalidateUpstreamApiKeyOnce(
+  id: number,
+  message: string | null
+): Promise<Account | undefined> {
+  const account = await getAccount(id)
+  if (!account) return undefined
+  const updated = await updateAccount(id, {
+    upstream_api_key: null,
+    status: account.disabled_reason === 'manual' ? 'disabled' : 'error',
+    disabled_reason: account.disabled_reason === 'manual' ? 'manual' : null,
+    last_error: message || 'The cached upstream API key was rejected and has been cleared.'
+  })
+  if (updated) await updateAccountPollSchedule(updated)
+  return updated
+}
+
+export function invalidateUpstreamApiKey(id: number, message: string | null) {
+  return accountOperations.run(id, () => invalidateUpstreamApiKeyOnce(id, message))
+}
+
 export function checkAccountRiskControl(id: number): Promise<RiskControlCheckResult> {
   return accountOperations.run(id, async () => {
     const account = await ensureAccountIpAssignment(id)
@@ -514,6 +555,11 @@ export function checkAccountRiskControl(id: number): Promise<RiskControlCheckRes
     let updated: Account
     if (inspection.blocked) {
       updated = (await markAccountRiskControlled(id, inspection.message))!
+    } else if (response.status === 401 || response.status === 403) {
+      updated = (await invalidateUpstreamApiKeyOnce(
+        id,
+        `Upstream API key rejected (status ${response.status}); cached key cleared.`
+      ))!
     } else if (response.ok && account.disabled_reason === RISK_CONTROL_DISABLED_REASON) {
       updated = (await updateAccount(id, {
         status: 'active',
@@ -554,19 +600,26 @@ export async function checkAllAccountRiskControls() {
 export async function refreshDueAccounts(now = new Date()) {
   await ensureAccountPollSchedule(now.getTime())
   const nowMs = now.getTime()
-  const ids = [
-    ...accountPollSchedule.takeDue('quota', nowMs),
-    ...accountPollSchedule.takeDue('error', nowMs)
-  ]
+  const settings = await getAccountRefreshSettings()
+  const ids = accountPollSchedule.takeDue('quota', nowMs)
+  if (settings.auto_refresh_errors) {
+    ids.push(...accountPollSchedule.takeDue('error', nowMs))
+  }
   return refreshScheduledAccounts([...new Set(ids)])
 }
 
 export async function refreshDueMembershipAccounts(now = new Date()) {
   await ensureAccountPollSchedule(now.getTime())
-  return refreshScheduledAccounts(accountPollSchedule.takeDue('membership', now.getTime()))
+  return refreshScheduledAccounts(
+    accountPollSchedule.takeDue('membership', now.getTime()),
+    { skipErrors: true }
+  )
 }
 
-async function refreshScheduledAccounts(ids: number[]) {
+async function refreshScheduledAccounts(
+  ids: number[],
+  options: { skipErrors?: boolean } = {}
+) {
   const checked = await mapConcurrent(ids, REFRESH_CONCURRENCY, async id => {
     const account = await getAccount(id)
     if (!account) {
@@ -574,6 +627,18 @@ async function refreshScheduledAccounts(ids: number[]) {
       return null
     }
     if (account.disabled_reason === 'manual') {
+      accountPollSchedule.schedule(account)
+      return null
+    }
+    if (account.disabled_reason === 'auth_expired') {
+      accountPollSchedule.schedule(account)
+      return null
+    }
+    if (
+      options.skipErrors &&
+      (account.status === 'error' || account.disabled_reason === 'auth_expired')
+    ) {
+      // Error retries are controlled exclusively by auto_refresh_errors.
       accountPollSchedule.schedule(account)
       return null
     }

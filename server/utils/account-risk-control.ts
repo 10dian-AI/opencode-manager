@@ -7,7 +7,9 @@ export interface RiskControlInspection {
 }
 
 export function isProtectedAccountDisabledReason(reason: string | null | undefined) {
-  return reason === 'manual' || reason === RISK_CONTROL_DISABLED_REASON
+  return reason === 'manual' ||
+    reason === 'auth_expired' ||
+    reason === RISK_CONTROL_DISABLED_REASON
 }
 
 export async function inspectRiskControlResponse(

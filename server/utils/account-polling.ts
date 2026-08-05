@@ -105,7 +105,7 @@ export class AccountPollSchedule {
   schedule(account: PollableAccount, now = Date.now(), includeOverdue = false) {
     const previousVersion = this.states.get(account.id)?.version || 0
     const version = previousVersion + 1
-    if (account.disabled_reason === 'manual') {
+    if (account.disabled_reason === 'manual' || account.disabled_reason === 'auth_expired') {
       this.states.set(account.id, { version, quota: null, membership: null, error: null })
       return
     }
@@ -117,7 +117,7 @@ export class AccountPollSchedule {
     const quota = rawQuota !== null && (includeOverdue || rawQuota > now) ? rawQuota : null
     const lastSynced = timestamp(account.last_synced_at)
     const membership = lastSynced === null ? now : Math.max(now, lastSynced + MEMBERSHIP_INTERVAL_MS)
-    const error = account.status === 'error'
+    const error = account.status === 'error' && account.disabled_reason !== 'auth_expired'
       ? lastSynced === null
         ? now
         : Math.max(now, lastSynced + ERROR_REFRESH_INTERVAL_MS)

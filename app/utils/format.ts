@@ -32,7 +32,7 @@ export function formatDate(value: string | null | undefined): string {
   }
 }
 
-export function statusColor(status: string): 'success' | 'error' | 'warning' | 'neutral' | 'info' {
+export function statusColor(status: string): 'success' | 'error' | 'warning' | 'neutral' {
   switch (status) {
     case 'active':
       return 'success'
@@ -43,6 +43,21 @@ export function statusColor(status: string): 'success' | 'error' | 'warning' | '
     case 'disabled':
       return 'neutral'
     default:
-      return 'info'
+      return 'neutral'
+  }
+}
+
+export function statusLabel(status: string): string {
+  switch (status) {
+    case 'active':
+      return '正常'
+    case 'error':
+      return '错误'
+    case 'pending':
+      return '待同步'
+    case 'disabled':
+      return '已禁用'
+    default:
+      return status || '未知'
   }
 }

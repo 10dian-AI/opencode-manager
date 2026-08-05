@@ -39,6 +39,16 @@ export interface SubscriptionCancellationResult {
 
 export type OpenCodeAccountLoadStage = 'workspace-page' | 'route-modules'
 
+export class AuthCookieExpiredError extends Error {
+  constructor(status: number, detail?: string) {
+    super(
+      `OpenCode auth Cookie is no longer valid (status ${status}). ` +
+      `Please replace this account's Cookie value.${detail ? ` Upstream: ${detail}` : ''}`
+    )
+    this.name = 'AuthCookieExpiredError'
+  }
+}
+
 export interface ReferralUsagePreviewItem {
   beforePercent: number
   afterPercent: number
@@ -56,6 +66,7 @@ const LOCALE = 'zh'
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 const REQUEST_TIMEOUT_MS = 20_000
+const WORKSPACE_RETRY_DELAYS_MS = [500, 1_500, 4_000]
 
 interface RouteModuleCache {
   signature: string
@@ -91,6 +102,73 @@ function fetchWithDeadline(
     ? AbortSignal.any([init.signal, timeout])
     : timeout
   return fetchImpl(input, { ...init, signal })
+}
+
+function isRetryableWorkspaceStatus(status: number) {
+  return status === 408 || status === 429 || status >= 500
+}
+
+class WorkspaceResponseError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message)
+    this.name = 'WorkspaceResponseError'
+  }
+}
+
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function workspaceResponseError(response: Response) {
+  const detail = await response.text()
+    .then(body => body.replace(/\s+/g, ' ').trim().slice(0, 200))
+    .catch(() => '')
+  if (response.status === 401 || response.status === 403) {
+    return new AuthCookieExpiredError(response.status, detail)
+  }
+  return new WorkspaceResponseError(
+    `Failed to load workspace page after retries (status ${response.status})` +
+    `${detail ? `: ${detail}` : ''}`,
+    response.status
+  )
+}
+
+async function fetchWorkspacePage(
+  cookie: string,
+  workspaceId: string,
+  fetchImpl: typeof fetch
+) {
+  let lastError: unknown
+  for (let attempt = 0; attempt <= WORKSPACE_RETRY_DELAYS_MS.length; attempt++) {
+    let response: Response | null = null
+    try {
+      response = await fetchWithDeadline(
+        fetchImpl,
+        `${BASE}/workspace/${workspaceId}/go`,
+        {
+          method: 'GET',
+          redirect: 'follow',
+          headers: commonHeaders(cookie)
+        }
+      )
+    } catch (error) {
+      lastError = error
+    }
+
+    if (response) {
+      if (response.ok) return response
+      const responseError = await workspaceResponseError(response)
+      if (!isRetryableWorkspaceStatus(response.status)) throw responseError
+      lastError = responseError
+    }
+
+    const delay = WORKSPACE_RETRY_DELAYS_MS[attempt]
+    if (delay === undefined) break
+    await sleep(delay)
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error('Failed to load workspace page after retries')
 }
 
 function extractWorkspaceId(location: string | null): string | null {
@@ -208,7 +286,10 @@ export function parseOpenCodeHydration(
   } else if (/liteSubscriptionID:\s*"[^"]+"/.test(html)) {
     result.subscriptionStatus = 'active'
   } else {
-    result.subscriptionStatus = 'inactive'
+    // Missing markers are an upstream markup/version change, not proof that
+    // the account lost membership. The refresh layer preserves the last known
+    // membership state when this remains unknown.
+    result.subscriptionStatus = null
   }
 
   return result
@@ -524,11 +605,19 @@ async function resolveWorkspaceId(cookie: string, fetchImpl: typeof fetch): Prom
   const location = authRes.headers.get('location')
   let workspaceId: string | null = null
 
+  if (authRes.status === 401 || authRes.status === 403) {
+    const detail = await authRes.text()
+      .then(body => body.replace(/\s+/g, ' ').trim().slice(0, 200))
+      .catch(() => '')
+    throw new AuthCookieExpiredError(authRes.status, detail)
+  }
+
   if ([301, 302, 303, 307, 308].includes(authRes.status)) {
     workspaceId = extractWorkspaceId(location)
     if (!workspaceId) {
-      throw new Error(
-        `Auth redirected but not to workspace (status ${authRes.status}, location: ${location || 'none'}). Cookie may be invalid or expired.`
+      throw new AuthCookieExpiredError(
+        authRes.status,
+        `redirected to ${location || 'an unknown login page'}`
       )
     }
   } else if (authRes.status === 200) {
@@ -537,9 +626,7 @@ async function resolveWorkspaceId(cookie: string, fetchImpl: typeof fetch): Prom
   }
 
   if (!workspaceId) {
-    throw new Error(
-      `Failed to resolve workspace from /auth (status ${authRes.status}, location: ${location || 'none'}). Cookie may be invalid or expired.`
-    )
+    throw new AuthCookieExpiredError(authRes.status, 'workspace could not be resolved from /auth')
   }
 
   return workspaceId
@@ -552,15 +639,7 @@ async function loadWorkspace(
   onStage?: (stage: OpenCodeAccountLoadStage) => void
 ): Promise<OpenCodeAccountInfo> {
   onStage?.('workspace-page')
-  const goRes = await fetchWithDeadline(fetchImpl, `${BASE}/workspace/${workspaceId}/go`, {
-    method: 'GET',
-    redirect: 'follow',
-    headers: commonHeaders(cookie)
-  })
-
-  if (!goRes.ok) {
-    throw new Error(`Failed to load workspace page (status ${goRes.status})`)
-  }
+  const goRes = await fetchWorkspacePage(cookie, workspaceId, fetchImpl)
 
   let finalPath = ''
   try {
@@ -571,6 +650,9 @@ async function loadWorkspace(
 
   const finalWorkspaceId = extractWorkspaceId(goRes.url)
   if (!finalPath.startsWith('/workspace/') || !finalWorkspaceId) {
+    if (finalPath.startsWith('/auth') || finalPath.includes('/login')) {
+      throw new AuthCookieExpiredError(goRes.status, `redirected to ${finalPath}`)
+    }
     throw new Error(
       `Workspace page redirected outside workspace (path: ${finalPath || 'unknown'})`
     )
@@ -610,7 +692,16 @@ export async function fetchOpenCodeAccount(
   const cachedId = cachedWorkspaceId?.trim()
 
   if (cachedId) {
-    return loadWorkspace(cookie, cachedId, fetchImpl, onStage)
+    try {
+      return await loadWorkspace(cookie, cachedId, fetchImpl, onStage)
+    } catch (error) {
+      if (!(error instanceof WorkspaceResponseError) ||
+        !isRetryableWorkspaceStatus(error.status)) throw error
+
+      const resolvedId = await resolveWorkspaceId(cookie, fetchImpl)
+      if (resolvedId === cachedId) throw error
+      return loadWorkspace(cookie, resolvedId, fetchImpl, onStage)
+    }
   }
 
   const workspaceId = await resolveWorkspaceId(cookie, fetchImpl)
@@ -653,6 +744,12 @@ export async function fetchOpenCodeApiKey(
     headers: commonHeaders(cookie)
   })
   if (!response.ok) {
+    if (response.status === 401 || response.status === 403) {
+      const detail = await response.text()
+        .then(body => body.replace(/\s+/g, ' ').trim().slice(0, 200))
+        .catch(() => '')
+      throw new AuthCookieExpiredError(response.status, detail)
+    }
     throw new Error(`Failed to load API keys page (status ${response.status})`)
   }
   const html = await response.text()

@@ -149,8 +149,13 @@ async function onRefreshAll() {
                 <p class="truncate font-medium text-highlighted">
                   {{ account.name || account.email || `账号 #${account.id}` }}
                 </p>
-                <UBadge :color="statusColor(account.status)" variant="subtle" size="sm">
-                  {{ account.status }}
+                <UBadge
+                  :key="`${account.id}-${account.status}`"
+                  :color="statusColor(account.status)"
+                  variant="subtle"
+                  size="sm"
+                >
+                  {{ statusLabel(account.status) }}
                 </UBadge>
               </div>
               <p class="mt-1 truncate text-sm text-muted">

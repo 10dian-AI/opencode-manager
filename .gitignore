@@ -27,3 +27,6 @@ logs
 data/
 *.db
 *.db-*
+
+# Local runtime configuration
+config.yaml

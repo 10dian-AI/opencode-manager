@@ -19,7 +19,7 @@ services:
     # No published ports: only the app needs to reach the database.
 
   app:
-    image: ghcr.io/jellyfish-p/opencode-manager:latest
+    image: ghcr.io/10dian-ai/opencode-manager:latest
     # Swap the image for a local build with: docker compose build
     build:
       context: .
@@ -37,10 +37,13 @@ services:
       # Admin login key and optional client API keys, comma or newline separated.
       ADMIN_KEY: ${ADMIN_KEY:?ADMIN_KEY is required}
       API_KEYS: ${API_KEYS:-}
-      PROXY_MIN_WORKERS: ${PROXY_MIN_WORKERS:-64}
-      PROXY_MAX_WORKERS: ${PROXY_MAX_WORKERS:-1024}
+      PROXY_MIN_WORKERS: ${PROXY_MIN_WORKERS:-4}
+      PROXY_MAX_WORKERS: ${PROXY_MAX_WORKERS:-32}
       PROXY_QUEUE_LIMIT: ${PROXY_QUEUE_LIMIT:-8192}
       RISK_CONTROL_CHECK_MODEL: ${RISK_CONTROL_CHECK_MODEL:-glm-5.2}
+      PROXY_ACCOUNT_CONCURRENCY: ${PROXY_ACCOUNT_CONCURRENCY:-2}
+      AUTO_APPLY_REFERRAL_REWARDS: ${AUTO_APPLY_REFERRAL_REWARDS:-false}
+      AUTO_CANCEL_SUBSCRIPTION_RENEWAL: ${AUTO_CANCEL_SUBSCRIPTION_RENEWAL:-false}
     ports:
       # Host port 3030 -> container port 3000.
       - "${APP_PORT:-3030}:3000"
