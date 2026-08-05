@@ -553,7 +553,12 @@ export async function checkAllAccountRiskControls() {
 
 export async function refreshDueAccounts(now = new Date()) {
   await ensureAccountPollSchedule(now.getTime())
-  return refreshScheduledAccounts(accountPollSchedule.takeDue('quota', now.getTime()))
+  const nowMs = now.getTime()
+  const ids = [
+    ...accountPollSchedule.takeDue('quota', nowMs),
+    ...accountPollSchedule.takeDue('error', nowMs)
+  ]
+  return refreshScheduledAccounts([...new Set(ids)])
 }
 
 export async function refreshDueMembershipAccounts(now = new Date()) {

@@ -1,7 +1,7 @@
 export default defineTask({
   meta: {
     name: 'refresh-accounts',
-    description: 'Refresh OpenCode accounts at quota reset nodes'
+    description: 'Refresh OpenCode accounts at quota reset nodes and retry failed refreshes'
   },
   async run() {
     const results = await refreshDueAccounts()
