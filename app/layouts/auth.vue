@@ -1,5 +1,5 @@
 <template>
-  <div class="min-h-screen flex items-center justify-center bg-default p-4">
+  <div class="ocm-shell flex min-h-screen items-center justify-center p-4">
     <slot />
   </div>
 </template>

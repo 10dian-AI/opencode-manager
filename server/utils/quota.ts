@@ -25,6 +25,15 @@ export function usedAmount(usagePercent: number | null | undefined, limit: numbe
   return Math.round((Math.max(0, usagePercent) / 100) * limit * 100) / 100
 }
 
+export function remainingPercent(usagePercent: number | null | undefined): number {
+  if (typeof usagePercent !== 'number' || !Number.isFinite(usagePercent)) return 0
+  return Math.round(Math.max(0, Math.min(100, 100 - usagePercent)) * 10) / 10
+}
+
+export function remainingAmount(usagePercent: number | null | undefined, limit: number): number {
+  return Math.round((remainingPercent(usagePercent) / 100) * limit * 100) / 100
+}
+
 export function analyzeQuota(snapshot: QuotaSnapshot) {
   const windows = [
     { name: 'rolling' as const, usage: snapshot.rollingUsage, resetAt: snapshot.rollingResetAt },

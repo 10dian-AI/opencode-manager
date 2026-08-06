@@ -1,5 +1,12 @@
 import { describe, expect, test } from 'bun:test'
-import { analyzeQuota, QUOTA_LIMITS_USD, resetAtFromSeconds, usedAmount } from '../server/utils/quota'
+import {
+  analyzeQuota,
+  QUOTA_LIMITS_USD,
+  remainingAmount,
+  remainingPercent,
+  resetAtFromSeconds,
+  usedAmount
+} from '../server/utils/quota'
 
 describe('quota accounting', () => {
   test('uses the configured 12/30/60 dollar windows', () => {
@@ -7,6 +14,13 @@ describe('quota accounting', () => {
     expect(usedAmount(50, QUOTA_LIMITS_USD.rolling)).toBe(6)
     expect(usedAmount(25, QUOTA_LIMITS_USD.weekly)).toBe(7.5)
     expect(usedAmount(10, QUOTA_LIMITS_USD.monthly)).toBe(6)
+  })
+
+  test('calculates clamped remaining quota', () => {
+    expect(remainingPercent(25)).toBe(75)
+    expect(remainingPercent(120)).toBe(0)
+    expect(remainingAmount(25, 12)).toBe(9)
+    expect(remainingAmount(null, 12)).toBe(0)
   })
 
   test('records absolute reset nodes and chooses the exhausted window release', () => {

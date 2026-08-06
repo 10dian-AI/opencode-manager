@@ -219,10 +219,10 @@ async function assignUnbound() {
 </script>
 
 <template>
-  <div class="space-y-6">
+  <div class="ocm-page space-y-6">
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h1 class="text-2xl font-semibold text-highlighted">IP 池</h1>
+        <h1 class="ocm-title text-2xl font-semibold">IP 池</h1>
         <p class="text-sm text-muted">为账号固定出口代理，仅在绑定节点被停用或删除时迁移</p>
       </div>
       <div class="flex gap-2">
@@ -247,21 +247,21 @@ async function assignUnbound() {
     />
 
     <div class="grid gap-4 lg:grid-cols-3">
-      <UCard>
+      <UCard class="ocm-card ocm-metric-card">
         <p class="text-sm text-muted">代理节点</p>
         <p class="mt-2 text-3xl font-semibold text-highlighted">{{ state.entries.length }}</p>
       </UCard>
-      <UCard>
+      <UCard class="ocm-card ocm-metric-card">
         <p class="text-sm text-muted">可用节点</p>
         <p class="mt-2 text-3xl font-semibold text-highlighted">{{ state.entries.filter(entry => entry.enabled).length }}</p>
       </UCard>
-      <UCard>
+      <UCard class="ocm-card ocm-metric-card">
         <p class="text-sm text-muted">已绑定账号</p>
         <p class="mt-2 text-3xl font-semibold text-highlighted">{{ state.assigned_accounts }}</p>
       </UCard>
     </div>
 
-    <UCard>
+    <UCard class="ocm-card">
       <template #header><h2 class="font-medium text-highlighted">自动分块</h2></template>
       <div class="flex flex-wrap items-end gap-3">
         <UFormField label="每块账号数" description="只影响之后的新绑定，不会重排已有账号">
@@ -271,7 +271,7 @@ async function assignUnbound() {
       </div>
     </UCard>
 
-    <UCard :ui="{ body: 'p-0 sm:p-0' }">
+    <UCard class="ocm-card" :ui="{ body: 'p-0 sm:p-0' }">
       <div v-if="!state.entries.length" class="py-16 text-center">
         <UIcon name="i-lucide-network" class="mx-auto size-10 text-muted" />
         <p class="mt-3 text-muted">IP 池为空，账号当前使用服务器直连出口</p>

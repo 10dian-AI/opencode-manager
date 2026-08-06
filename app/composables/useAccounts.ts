@@ -45,13 +45,14 @@ export interface Stats {
   pending: number
   members: number
   nonMembers: number
-  avgRolling: number
-  avgWeekly: number
-  avgMonthly: number
+  available: number
+  avgRollingRemaining: number
+  avgWeeklyRemaining: number
+  avgMonthlyRemaining: number
   totalBalance: number
-  rollingUsedAmount: number
-  weeklyUsedAmount: number
-  monthlyUsedAmount: number
+  rollingRemainingAmount: number
+  weeklyRemainingAmount: number
+  monthlyRemainingAmount: number
   rollingLimitAmount: number
   weeklyLimitAmount: number
   monthlyLimitAmount: number

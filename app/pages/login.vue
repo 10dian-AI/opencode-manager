@@ -32,7 +32,7 @@ async function onSubmit() {
 </script>
 
 <template>
-  <UCard class="w-full max-w-md">
+  <UCard class="ocm-card w-full max-w-md">
     <template #header>
       <div class="flex items-center gap-3">
         <UIcon name="i-lucide-boxes" class="size-7 text-primary" />

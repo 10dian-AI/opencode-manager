@@ -11,12 +11,14 @@ const links = [
 </script>
 
 <template>
-  <div class="min-h-screen bg-default">
-    <UHeader>
+  <div class="ocm-shell min-h-screen">
+    <UHeader class="ocm-header">
       <template #left>
         <div class="flex items-center gap-3">
-          <UIcon name="i-lucide-boxes" class="size-6 text-primary" />
-          <span class="font-semibold text-highlighted">OpenCode Manager</span>
+          <span class="ocm-brand-mark">
+            <UIcon name="i-lucide-boxes" class="size-5 text-white" />
+          </span>
+          <span class="font-semibold text-highlighted">10dian <em class="not-italic text-primary">OpenCode</em></span>
         </div>
       </template>
 
@@ -46,8 +48,8 @@ const links = [
       </template>
     </UHeader>
 
-    <UMain>
-      <UContainer class="py-6">
+    <UMain class="ocm-main">
+      <UContainer class="py-8 lg:py-10">
         <slot />
       </UContainer>
     </UMain>

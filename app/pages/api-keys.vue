@@ -83,10 +83,10 @@ async function copy(value: string) {
 </script>
 
 <template>
-  <div class="space-y-6">
+  <div class="ocm-page space-y-6">
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h1 class="text-2xl font-semibold text-highlighted">API 密钥</h1>
+        <h1 class="ocm-title text-2xl font-semibold">API 密钥</h1>
         <p class="text-sm text-muted">管理 OpenAI 兼容接口的访问密钥</p>
       </div>
       <UButton icon="i-lucide-plus" @click="openModal">添加密钥</UButton>
@@ -106,7 +106,7 @@ async function copy(value: string) {
       </template>
     </UAlert>
 
-    <UCard>
+    <UCard class="ocm-card">
       <template #header><h2 class="font-medium">接口信息</h2></template>
       <div class="space-y-2 text-sm">
         <div><span class="text-muted">Base URL：</span><code>{{ baseUrl }}</code></div>
@@ -115,7 +115,7 @@ async function copy(value: string) {
       </div>
     </UCard>
 
-    <UCard :ui="{ body: 'p-0 sm:p-0' }">
+    <UCard class="ocm-card" :ui="{ body: 'p-0 sm:p-0' }">
       <table class="w-full text-sm">
         <thead class="border-b border-default bg-elevated/50">
           <tr class="text-left text-muted"><th class="p-4">名称</th><th class="p-4">密钥</th><th class="p-4">来源</th><th class="p-4">创建时间</th><th class="p-4"></th></tr>

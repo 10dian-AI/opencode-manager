@@ -650,10 +650,10 @@ async function copyReferralLink(code: string) {
 </script>
 
 <template>
-  <div class="space-y-6">
+  <div class="ocm-page space-y-6">
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h1 class="text-2xl font-semibold text-highlighted">号池管理</h1>
+        <h1 class="ocm-title text-2xl font-semibold">号池管理</h1>
         <p class="text-sm text-muted">粘贴 auth Cookie 的纯 value，每行一个，自动解析 workspace / 用量</p>
       </div>
       <div class="flex flex-wrap items-center gap-2">
@@ -854,7 +854,7 @@ async function copyReferralLink(code: string) {
       </div>
     </div>
 
-    <UCard :ui="{ body: 'p-0 sm:p-0' }">
+    <UCard class="ocm-card" :ui="{ body: 'p-0 sm:p-0' }">
       <div v-if="!accounts.length" class="py-16 text-center">
         <UIcon name="i-lucide-inbox" class="mx-auto size-10 text-muted" />
         <p class="mt-3 text-muted">号池为空，添加 Cookie 开始管理</p>
