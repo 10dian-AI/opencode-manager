@@ -25,11 +25,8 @@ export function formatQuotaAmount(value: number | null | undefined, limit: numbe
 
 export function formatDate(value: string | null | undefined): string {
   if (!value) return '-'
-  try {
-    return new Date(value).toLocaleString('zh-CN')
-  } catch {
-    return value
-  }
+  const date = new Date(value)
+  return Number.isFinite(date.getTime()) ? date.toLocaleString('zh-CN') : value
 }
 
 export function statusColor(status: string): 'success' | 'error' | 'warning' | 'neutral' {

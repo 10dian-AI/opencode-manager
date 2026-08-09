@@ -1,11 +1,12 @@
 import type { Account, AccountStatus } from './db'
 import { resolveRefreshedAccountEmail } from './account-identity'
 import { AccountOperationQueue } from './account-operation-queue'
-import { AccountPollSchedule } from './account-polling'
+import { AccountPollSchedule, ERROR_REFRESH_INTERVAL_MS } from './account-polling'
 import { getAccountRefreshSettings } from './account-refresh-settings'
 import {
   beginAccountRefreshProgress,
   clearAccountRefreshProgress,
+  flushAccountRefreshProgress,
   type AccountRefreshProgressReporter
 } from './account-refresh-progress'
 import { validateAuthCookieValue } from './auth-cookie'
@@ -20,7 +21,9 @@ import {
 import {
   cacheAvailableReferralRewards,
   consumeCachedReferralReward,
+  flushCachedReferralRewards,
   getCachedReferralRewards,
+  hydrateCachedReferralRewards,
   removeCachedReferralRewards,
   selectCachedReferralReward,
   retainCachedReferralRewardAccounts
@@ -36,6 +39,22 @@ const AUTO_APPLY_REFERRAL_REWARDS = process.env.AUTO_APPLY_REFERRAL_REWARDS === 
 const AUTO_CANCEL_SUBSCRIPTION_RENEWAL = process.env.AUTO_CANCEL_SUBSCRIPTION_RENEWAL === 'true'
 
 let accountPollScheduleHydration: Promise<void> | null = null
+
+function runAccountOperation<T>(id: number, operation: () => Promise<T>) {
+  return accountOperations.run(id, async () => {
+    const result = await withAdvisoryLock(`account-operation:${id}`, async () => {
+      try {
+        return await operation()
+      } finally {
+        await Promise.all([
+          flushAccountRefreshProgress(id),
+          flushCachedReferralRewards(id)
+        ])
+      }
+    })
+    return result as T
+  })
+}
 
 function ensureAccountPollSchedule(now = Date.now()): Promise<void> {
   if (accountPollScheduleHydrated) return Promise.resolve()
@@ -74,6 +93,38 @@ export async function rebuildAccountPollSchedule() {
   accountPollScheduleHydrated = true
 }
 
+export function deleteManagedAccount(id: number) {
+  return runAccountOperation(id, async () => {
+    const result = await deleteAccount(id)
+    await Promise.resolve(removeAccountPollSchedule(id)).catch(() => {})
+    return result
+  })
+}
+
+export async function deleteManagedAccounts(ids: number[]) {
+  const uniqueIds = [...new Set(ids)]
+  const result = await withAccountLocks(uniqueIds, () => deleteAccounts(uniqueIds))
+  await Promise.allSettled(uniqueIds.map(removeAccountPollSchedule))
+  return result
+}
+
+export async function deleteManagedNonMemberAccounts() {
+  const ids = (await listAccounts())
+    .filter(account => account.subscription_status !== null && account.subscription_status !== 'active')
+    .map(account => account.id)
+  if (!ids.length) return { changes: 0 }
+  return withAccountLocks(ids, async () => {
+    const current = await getAccountsByIds(ids)
+    const eligibleIds = current
+      .filter(account => account.subscription_status !== null && account.subscription_status !== 'active')
+      .map(account => account.id)
+    if (!eligibleIds.length) return { changes: 0 }
+    const result = await deleteAccounts(eligibleIds)
+    await Promise.allSettled(eligibleIds.map(removeAccountPollSchedule))
+    return result
+  })
+}
+
 export function updateAccountSettings(
   id: number,
   body: {
@@ -82,7 +133,7 @@ export function updateAccountSettings(
     status?: AccountStatus
   }
 ) {
-  return accountOperations.run(id, async () => {
+  return runAccountOperation(id, async () => {
     const account = await getAccount(id)
     if (!account) {
       throw createError({ statusCode: 404, statusMessage: 'Account not found' })
@@ -142,7 +193,7 @@ async function mapConcurrent<T, R>(items: T[], limit: number, callback: (item: T
   return results
 }
 
-async function expandAccountWorkspaces(id: number): Promise<Account[]> {
+async function expandAccountWorkspacesOnce(id: number): Promise<Account[]> {
   const account = await ensureAccountIpAssignment(id)
   if (!account) return []
 
@@ -169,12 +220,12 @@ async function expandAccountWorkspaces(id: number): Promise<Account[]> {
     for (const info of additional) {
       const created = await createAccount({
         name: account.name || undefined,
-        auth_cookie: account.auth_cookie
-      })
-      expanded.push((await updateAccount(created.id, {
+        auth_cookie: account.auth_cookie,
         workspace_id: info.workspaceId,
-        workspace_name: info.workspaceName
-      }))!)
+        workspace_name: info.workspaceName,
+        allow_existing_cookie: true
+      })
+      expanded.push(created)
     }
     return expanded
   } catch {
@@ -228,7 +279,7 @@ export function refreshAccount(id: number): Promise<Account> {
   if (pending) return pending
 
   const progress = beginAccountRefreshProgress(id)
-  const refresh = accountOperations.run(id, () => refreshAccountOnce(id, { progress }))
+  const refresh = runAccountOperation(id, () => refreshAccountOnce(id, { progress }))
     .then(async account => {
       if (account.status === 'error') {
         progress.fail(account.last_error || '账号刷新失败')
@@ -519,11 +570,11 @@ async function invalidateUpstreamApiKeyOnce(
 }
 
 export function invalidateUpstreamApiKey(id: number, message: string | null) {
-  return accountOperations.run(id, () => invalidateUpstreamApiKeyOnce(id, message))
+  return runAccountOperation(id, () => invalidateUpstreamApiKeyOnce(id, message))
 }
 
 export function checkAccountRiskControl(id: number): Promise<RiskControlCheckResult> {
-  return accountOperations.run(id, async () => {
+  return runAccountOperation(id, async () => {
     const account = await ensureAccountIpAssignment(id)
     if (!account) {
       throw createError({ statusCode: 404, statusMessage: 'Account not found' })
@@ -598,22 +649,39 @@ export async function checkAllAccountRiskControls() {
 }
 
 export async function refreshDueAccounts(now = new Date()) {
-  await ensureAccountPollSchedule(now.getTime())
-  const nowMs = now.getTime()
   const settings = await getAccountRefreshSettings()
-  const ids = accountPollSchedule.takeDue('quota', nowMs)
-  if (settings.auto_refresh_errors) {
-    ids.push(...accountPollSchedule.takeDue('error', nowMs))
-  }
+  const nowMs = now.getTime()
+  const ids = (await listAccounts()).filter(account => {
+    if (account.disabled_reason === 'manual' || account.disabled_reason === 'auth_expired') return false
+    const quotaDue = [account.next_quota_refresh_at, account.auto_enable_at].some(value => {
+      if (!value) return false
+      const timestamp = new Date(value).getTime()
+      return Number.isFinite(timestamp) && timestamp <= nowMs
+    })
+    if (quotaDue) return true
+    if (!settings.auto_refresh_errors || account.status !== 'error') return false
+    const lastSynced = account.last_synced_at ? new Date(account.last_synced_at).getTime() : 0
+    return !Number.isFinite(lastSynced) || lastSynced + ERROR_REFRESH_INTERVAL_MS <= nowMs
+  }).map(account => account.id)
   return refreshScheduledAccounts([...new Set(ids)])
 }
 
+function expandAccountWorkspaces(id: number): Promise<Account[]> {
+  return runAccountOperation(id, () => expandAccountWorkspacesOnce(id))
+}
+
 export async function refreshDueMembershipAccounts(now = new Date()) {
-  await ensureAccountPollSchedule(now.getTime())
-  return refreshScheduledAccounts(
-    accountPollSchedule.takeDue('membership', now.getTime()),
-    { skipErrors: true }
-  )
+  const nowMs = now.getTime()
+  const ids = (await listAccounts()).filter(account => {
+    if (
+      account.status === 'error' ||
+      account.disabled_reason === 'manual' ||
+      account.disabled_reason === 'auth_expired'
+    ) return false
+    const lastSynced = account.last_synced_at ? new Date(account.last_synced_at).getTime() : 0
+    return !Number.isFinite(lastSynced) || lastSynced + 15 * 60 * 1000 <= nowMs
+  }).map(account => account.id)
+  return refreshScheduledAccounts(ids, { skipErrors: true })
 }
 
 async function refreshScheduledAccounts(
@@ -649,7 +717,7 @@ async function refreshScheduledAccounts(
 }
 
 export function useAccountReferralReward(id: number, referralId: string) {
-  return accountOperations.run(id, () => useAccountReferralRewardOnce(id, referralId))
+  return runAccountOperation(id, () => useAccountReferralRewardOnce(id, referralId))
 }
 
 async function useAccountReferralRewardOnce(id: number, referralId: string) {
@@ -659,7 +727,7 @@ async function useAccountReferralRewardOnce(id: number, referralId: string) {
   }
   const fetchImpl = await createAccountFetch(account)
 
-  const cached = getCachedReferralRewards(id)
+  const cached = await hydrateCachedReferralRewards(id)
   if (!cached) {
     throw createError({ statusCode: 409, statusMessage: 'Referral reward cache is unavailable' })
   }
@@ -706,7 +774,11 @@ async function useAccountReferralRewardOnce(id: number, referralId: string) {
   }
 }
 
-export async function cancelAccountRenewal(id: number) {
+export function cancelAccountRenewal(id: number) {
+  return runAccountOperation(id, () => cancelAccountRenewalOnce(id))
+}
+
+async function cancelAccountRenewalOnce(id: number) {
   const account = await ensureAccountIpAssignment(id)
   if (!account) {
     throw createError({ statusCode: 404, statusMessage: 'Account not found' })
@@ -740,8 +812,10 @@ export async function cancelAccountRenewal(id: number) {
     subscription_cancel_error: null
   })
 
+  const refreshedAccount = await refreshAccountOnce(id, { skipReferralRewards: true })
+  await updateAccountPollSchedule(refreshedAccount)
   return {
-    account: await refreshAccount(id),
+    account: refreshedAccount,
     alreadyCancelled: cancellation.alreadyCancelled,
     currentPeriodEnd: cancellation.currentPeriodEnd
   }

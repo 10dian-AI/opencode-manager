@@ -76,7 +76,7 @@ const filteredAccounts = computed(() => {
     const matchesMembership =
       membershipFilter.value === 'all' ||
       (membershipFilter.value === 'member' && account.subscription_status === 'active') ||
-      (membershipFilter.value === 'non-member' && account.subscription_status !== 'active')
+      (membershipFilter.value === 'non-member' && Boolean(account.subscription_status) && account.subscription_status !== 'active')
     const isRiskControlled = account.disabled_reason === 'risk_control'
     const matchesRiskControl =
       riskControlFilter.value === 'all' ||
@@ -87,7 +87,7 @@ const filteredAccounts = computed(() => {
 })
 
 const nonMemberCount = computed(() =>
-  accounts.value.filter(account => account.subscription_status !== 'active').length
+  accounts.value.filter(account => Boolean(account.subscription_status) && account.subscription_status !== 'active').length
 )
 const riskControlledCount = computed(() =>
   accounts.value.filter(account => account.disabled_reason === 'risk_control').length
@@ -409,8 +409,10 @@ async function onRefresh(id: number) {
     const account = await refreshAccount(id, progress => {
       singleRefreshProgress.value = progress
     })
-    if (account.status === 'error') {
-      toast.add({ title: account.last_error || '同步失败', color: 'error' })
+    if (account.status === 'error' || account.disabled_reason === 'auth_expired') {
+      toast.add({ title: account.last_error || account.disabled_reason || '同步失败', color: 'error' })
+    } else if (account.status === 'disabled') {
+      toast.add({ title: '同步成功，账号当前不可用', description: account.disabled_reason || undefined, color: 'warning' })
     } else {
       toast.add({ title: '同步成功', color: 'success' })
     }
@@ -429,9 +431,16 @@ async function onToggle(account: Account) {
     const next = account.status === 'disabled' ? 'pending' : 'disabled'
     await updateAccount(account.id, { status: next })
     if (next === 'pending') {
-      await refreshAccount(account.id, progress => {
+      const refreshed = await refreshAccount(account.id, progress => {
         singleRefreshProgress.value = progress
       })
+      if (refreshed.status === 'error' || refreshed.disabled_reason === 'auth_expired') {
+        throw new Error(refreshed.last_error || refreshed.disabled_reason || '账号同步失败')
+      }
+      if (refreshed.status === 'disabled') {
+        toast.add({ title: '账号已同步，但当前仍不可用', description: refreshed.disabled_reason || undefined, color: 'warning' })
+        return
+      }
     }
     toast.add({ title: next === 'disabled' ? '已禁用' : '已启用并同步', color: 'success' })
   } catch (e: any) {

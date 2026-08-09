@@ -33,14 +33,16 @@ export default defineEventHandler(async (event) => {
     }
 
     progress?.update('creating', '正在创建初始账号记录')
-    const created = await createAccounts(authCookieValues.map((authCookie, index) => ({
-      name: body.name
-        ? authCookieValues.length === 1
-          ? body.name
-          : `${body.name} ${index + 1}`
-        : undefined,
-      auth_cookie: authCookie
-    })))
+    const created = await withAuthCookieLocks(authCookieValues, () => createAccounts(
+      authCookieValues.map((authCookie, index) => ({
+        name: body.name
+          ? authCookieValues.length === 1
+            ? body.name
+            : `${body.name} ${index + 1}`
+          : undefined,
+        auth_cookie: authCookie
+      }))
+    ))
     await ensureStableIpAssignments()
     const assignedCreated = await getAccountsByIds(created.map(account => account.id))
     progress?.setAccountIds(assignedCreated.map(account => account.id))
@@ -62,7 +64,9 @@ export default defineEventHandler(async (event) => {
     progress?.update('finalizing', '正在汇总账号同步结果')
     const failed = body.refresh === false
       ? 0
-      : accounts.filter(account => account.status === 'error').length
+      : accounts.filter(account =>
+          account.status === 'error' || account.disabled_reason === 'auth_expired'
+        ).length
     const result = {
       created: accounts.length,
       synchronized: body.refresh === false ? 0 : accounts.length - failed,
@@ -70,10 +74,12 @@ export default defineEventHandler(async (event) => {
       accounts: accounts.map(toPublicAccount)
     }
     progress?.complete()
+    if (operationId) await flushAccountImportProgress(operationId)
     return result
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Account import failed'
     progress?.fail(message)
+    if (operationId) await flushAccountImportProgress(operationId)
     throw error
   }
 })

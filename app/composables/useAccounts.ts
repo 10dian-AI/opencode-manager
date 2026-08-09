@@ -150,6 +150,9 @@ export function useAccounts() {
   const accounts = useState<Account[]>('accounts', () => [])
   const stats = useState<Stats | null>('stats', () => null)
   const loading = useState('accounts-loading', () => false)
+  const accountsRequestGeneration = useState('accounts-request-generation', () => 0)
+  const statsRequestGeneration = useState('stats-request-generation', () => 0)
+  const visibleAccountRequests = useState('visible-account-requests', () => 0)
   const accountRefreshSettings = useState<AccountRefreshSettings | null>(
     'account-refresh-settings',
     () => null
@@ -162,16 +165,26 @@ export function useAccounts() {
   }
 
   async function fetchAccounts(silent = false) {
-    if (!silent) loading.value = true
+    const generation = ++accountsRequestGeneration.value
+    if (!silent) {
+      visibleAccountRequests.value++
+      loading.value = true
+    }
     try {
-      accounts.value = await requestFetch<Account[]>('/api/accounts')
+      const result = await requestFetch<Account[]>('/api/accounts')
+      if (generation === accountsRequestGeneration.value) accounts.value = result
     } finally {
-      if (!silent) loading.value = false
+      if (!silent) {
+        visibleAccountRequests.value = Math.max(0, visibleAccountRequests.value - 1)
+        loading.value = visibleAccountRequests.value > 0
+      }
     }
   }
 
   async function fetchStats() {
-    stats.value = await requestFetch<Stats>('/api/stats')
+    const generation = ++statsRequestGeneration.value
+    const result = await requestFetch<Stats>('/api/stats')
+    if (generation === statsRequestGeneration.value) stats.value = result
   }
 
   async function fetchAccountRefreshSettings() {
@@ -456,7 +469,9 @@ export function useAccounts() {
       )
       updatedAccounts.push(updated)
       applyAccount(updated)
-      if (updated.status === 'error') throw new Error(updated.last_error || 'Account refresh failed')
+      if (updated.status === 'error' || updated.disabled_reason === 'auth_expired') {
+        throw new Error(updated.last_error || updated.disabled_reason || 'Account refresh failed')
+      }
     }
 
     async function worker() {

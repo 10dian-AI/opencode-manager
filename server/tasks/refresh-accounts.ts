@@ -4,7 +4,12 @@ export default defineTask({
     description: 'Refresh OpenCode accounts at quota reset nodes and optionally retry failed refreshes'
   },
   async run() {
-    const results = await refreshDueAccounts()
+    await cleanExpiredSessions()
+    const results = await withAdvisoryLock(
+      'scheduled-task:refresh-accounts',
+      refreshDueAccounts,
+      { wait: false }
+    ) || []
     return {
       result: {
         count: results.length,

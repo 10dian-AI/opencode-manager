@@ -10,6 +10,6 @@ export default defineEventHandler(async (event) => {
   }
 
   return {
-    progress: getAccountImportProgress(operationId)
+    progress: await getSharedAccountImportProgress(operationId)
   }
 })

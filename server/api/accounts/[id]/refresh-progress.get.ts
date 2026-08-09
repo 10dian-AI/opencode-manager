@@ -7,6 +7,6 @@ export default defineEventHandler(async (event) => {
   }
 
   return {
-    progress: getAccountRefreshProgress(id)
+    progress: await getSharedAccountRefreshProgress(id)
   }
 })

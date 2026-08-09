@@ -50,6 +50,7 @@ async function waitForServer(url: string) {
 }
 
 beforeAll(async () => {
+  if (!process.env.DATABASE_URL) return
   const port = await reservePort()
   const rawConfig = await readFile('config.yaml', 'utf8')
   const config = parse(rawConfig) as { admin_key: string }
@@ -75,6 +76,7 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
+  if (!process.env.DATABASE_URL) return
   if (server && server.exitCode === null) {
     server.kill()
     await new Promise<void>(resolveExit => server.once('exit', () => resolveExit()))
@@ -85,7 +87,9 @@ afterAll(async () => {
   }
 })
 
-test('an authenticated SSR request can render a protected page', async () => {
+const integrationTest = process.env.DATABASE_URL ? test : test.skip
+
+integrationTest('an authenticated SSR request can render a protected page', async () => {
   const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

@@ -12,8 +12,7 @@ export default defineEventHandler(async (event) => {
     })
   }
 
-  const { changes } = await deleteAccounts(ids)
-  for (const id of ids) await removeAccountPollSchedule(id)
+  const { changes } = await deleteManagedAccounts(ids)
 
   return { ok: true, deleted: changes }
 })

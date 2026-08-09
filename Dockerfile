@@ -16,11 +16,12 @@ RUN bun run build
 # pg is loaded at runtime via createRequire, so it must exist as a real
 # node_modules entry. Resolving it in an isolated directory keeps the runtime
 # image free of build-only dependencies.
-FROM oven/bun:1.3.14-debian AS pgdeps
+FROM oven/bun:1.3.14-debian AS runtime-deps
 
-WORKDIR /pgdeps
-RUN echo '{"name":"pgdeps","private":true}' > package.json \
-    && bun add pg@8.13.1 --ignore-scripts \
+WORKDIR /runtime-deps
+COPY package.json bun.lock ./
+RUN BUN_FEATURE_FLAG_DISABLE_NATIVE_DEPENDENCY_LINKER=1 \
+    bun install --production --frozen-lockfile --ignore-scripts \
     && rm -rf /root/.bun/install/cache
 
 FROM oven/bun:1.3.14-debian AS runner
@@ -31,7 +32,7 @@ ENV NODE_ENV=production \
 
 WORKDIR /app
 
-COPY --from=pgdeps --chown=bun:bun /pgdeps/node_modules ./node_modules
+COPY --from=runtime-deps --chown=bun:bun /runtime-deps/node_modules ./node_modules
 COPY --from=builder --chown=bun:bun /app/.output ./.output
 
 USER bun

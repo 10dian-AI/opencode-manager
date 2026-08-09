@@ -285,6 +285,8 @@ export function parseOpenCodeHydration(
     result.subscriptionStatus = 'active'
   } else if (/liteSubscriptionID:\s*"[^"]+"/.test(html)) {
     result.subscriptionStatus = 'active'
+  } else if (/lite\.subscription\.get\[[\s\S]{0,300}?=\s*(?:null|undefined)\s*;/.test(html)) {
+    result.subscriptionStatus = 'inactive'
   } else {
     // Missing markers are an upstream markup/version change, not proof that
     // the account lost membership. The refresh layer preserves the last known

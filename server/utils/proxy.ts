@@ -61,61 +61,47 @@ function refreshAfterUpstreamError(accountId: number) {
   })
 }
 
-interface AccountSlotWaiter {
-  resolve: (release: () => void) => void
-  reject: (error: Error) => void
-}
-
-const accountSlots = new Map<number, { active: number; waiters: AccountSlotWaiter[] }>()
-
-function acquireAccountSlot(accountId: number, signal: AbortSignal): Promise<() => void> {
-  const state = accountSlots.get(accountId) || { active: 0, waiters: [] }
-  accountSlots.set(accountId, state)
-  if (state.active < PROXY_ACCOUNT_CONCURRENCY) {
-    state.active++
-    return Promise.resolve(() => releaseAccountSlot(accountId, state))
-  }
-
-  return new Promise((resolve, reject) => {
-    let settled = false
-    const abort = () => {
-      if (settled) return
-      settled = true
-      const index = state.waiters.indexOf(waiter)
-      if (index >= 0) state.waiters.splice(index, 1)
-      reject(new ProxyRequestAbortedError())
+async function waitForAccountSlot(signal: AbortSignal) {
+  while (!signal.aborted) {
+    const accounts = await getProxyCandidates()
+    if (!accounts.length) return null
+    const first = await reserveProxyCandidate()
+    if (!first) return null
+    const start = accounts.findIndex(account => account.id === first.id)
+    for (let attempt = 0; attempt < accounts.length; attempt++) {
+      const account = accounts[(Math.max(0, start) + attempt) % accounts.length]!
+      const release = await tryAcquireAccountProxySlot(
+        account.id,
+        PROXY_ACCOUNT_CONCURRENCY,
+        PROXY_UPSTREAM_TIMEOUT_MS + 60_000
+      )
+      if (release) return { account, release }
     }
-    const waiter: AccountSlotWaiter = {
-      resolve: release => {
-        if (settled) return
-        settled = true
+    await new Promise<void>((resolve, reject) => {
+      const finish = () => {
         signal.removeEventListener('abort', abort)
-        resolve(release)
-      },
-      reject
-    }
-    state.waiters.push(waiter)
-    signal.addEventListener('abort', abort, { once: true })
-    if (signal.aborted) abort()
-  })
-}
-
-function releaseAccountSlot(
-  accountId: number,
-  state: { active: number; waiters: AccountSlotWaiter[] }
-) {
-  const waiter = state.waiters.shift()
-  if (waiter) {
-    waiter.resolve(() => releaseAccountSlot(accountId, state))
-    return
+        resolve()
+      }
+      const timer = setTimeout(finish, 25)
+      const abort = () => {
+        clearTimeout(timer)
+        signal.removeEventListener('abort', abort)
+        reject(signal.reason || new ProxyRequestAbortedError())
+      }
+      signal.addEventListener('abort', abort, { once: true })
+      if (signal.aborted) abort()
+    })
   }
-  state.active--
-  if (state.active <= 0) accountSlots.delete(accountId)
+  throw signal.reason || new ProxyRequestAbortedError()
 }
 
-function responseHoldingAccountSlot(response: Response, release: () => void) {
+function responseHoldingAccountSlot(
+  response: Response,
+  release: () => Promise<void>,
+  signal?: AbortSignal
+) {
   if (!response.body) {
-    release()
+    void release()
     return response
   }
   const reader = response.body.getReader()
@@ -123,8 +109,15 @@ function responseHoldingAccountSlot(response: Response, release: () => void) {
   const finish = () => {
     if (released) return
     released = true
-    release()
+    signal?.removeEventListener('abort', abort)
+    void release()
   }
+  const abort = () => {
+    finish()
+    void reader.cancel(signal?.reason).catch(() => {})
+  }
+  signal?.addEventListener('abort', abort, { once: true })
+  if (signal?.aborted) abort()
   const body = new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
@@ -161,13 +154,13 @@ export async function proxyChatCompletions(event: H3Event): Promise<Response> {
       const body = await readRawBody(event)
       if (!body) return jsonError(400, 'Request body is required', 'invalid_request')
 
-      const account = await reserveProxyCandidate()
-      if (!account) {
+      const slot = await waitForAccountSlot(upstreamSignal)
+      if (!slot) {
         return jsonError(503, 'No active OpenCode Go accounts are available', 'pool_unavailable')
       }
+      const { account, release: releaseAccountSlot } = slot
 
       try {
-        const releaseAccountSlot = await acquireAccountSlot(account.id, requestLifecycle.signal)
         try {
           const fetchImpl = await createAccountFetch(account)
           const response = await fetchImpl(`${GO_BASE}/chat/completions`, {
@@ -184,9 +177,9 @@ export async function proxyChatCompletions(event: H3Event): Promise<Response> {
           } else if (ACCOUNT_ERROR_STATUSES.has(response.status) || response.status >= 500) {
             refreshAfterUpstreamError(account.id)
           }
-          return responseHoldingAccountSlot(response, releaseAccountSlot)
+          return responseHoldingAccountSlot(response, releaseAccountSlot, upstreamSignal)
         } catch (error) {
-          releaseAccountSlot()
+          await releaseAccountSlot()
           throw error
         }
       } catch {
@@ -198,7 +191,7 @@ export async function proxyChatCompletions(event: H3Event): Promise<Response> {
         return jsonError(502, 'Upstream request failed', 'upstream_error')
       }
     }, {
-      signal: requestLifecycle.signal,
+      signal: upstreamSignal,
       queueTimeoutMs: PROXY_QUEUE_TIMEOUT_MS
     })
   } catch (error) {
@@ -216,22 +209,39 @@ export async function proxyChatCompletions(event: H3Event): Promise<Response> {
 }
 
 export async function proxyModels(event: H3Event): Promise<Response> {
-  const account = (await getProxyCandidates())[0]
+  const lifecycle = createProxyRequestLifecycle(event)
+  const timeout = AbortSignal.timeout(Math.min(PROXY_UPSTREAM_TIMEOUT_MS, 60_000))
+  const signal = AbortSignal.any([lifecycle.signal, timeout])
+  let release: (() => Promise<void>) | null = null
   try {
-    const fetchImpl = account ? await createAccountFetch(account) : fetch
+    const slot = await waitForAccountSlot(signal)
+    if (!slot) {
+      return jsonError(503, 'No active OpenCode Go accounts are available', 'pool_unavailable')
+    }
+    const { account } = slot
+    release = slot.release
+    const fetchImpl = await createAccountFetch(account)
     const response = await fetchImpl(`${GO_BASE}/models`, {
-      headers: upstreamHeaders(event, account?.upstream_api_key || undefined)
+      headers: upstreamHeaders(event, account.upstream_api_key || undefined),
+      signal
     })
-    if (account && (response.status === 401 || response.status === 403)) {
+    if (response.status === 401 || response.status === 403) {
       await invalidateUpstreamApiKey(
         account.id,
         `Upstream API key rejected (status ${response.status}); cached key cleared.`
       ).catch(() => {})
-    } else if (!response.ok && account) {
+    } else if (!response.ok) {
       refreshAfterUpstreamError(account.id)
     }
-    return response
+    return responseHoldingAccountSlot(response, release, signal)
   } catch {
+    if (release) await release()
+    if (lifecycle.signal.aborted) {
+      return jsonError(499, 'Client closed the request', 'client_closed_request')
+    }
+    if (timeout.aborted) {
+      return jsonError(504, 'Upstream request timed out', 'upstream_timeout')
+    }
     return jsonError(502, 'Failed to load upstream models', 'upstream_error')
   }
 }

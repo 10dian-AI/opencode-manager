@@ -1,5 +1,7 @@
 import { createRequire } from 'node:module'
+import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
+import { createError } from 'h3'
 import { normalizeStoredAuthCookieValue, validateAuthCookieValue } from './auth-cookie'
 
 export type AccountStatus = 'pending' | 'active' | 'error' | 'disabled'
@@ -136,18 +138,14 @@ const runtimeRequire = createRequire(
 )
 
 let pool: PoolLike | null = null
+let lockPool: PoolLike | null = null
 let readyPromise: Promise<PoolLike> | null = null
-let proxyCandidatesCache: Account[] | null = null
 let proxyPoolCursor = 0
-let managedApiKeyHashesCache: Set<string> | null = null
-
-function invalidateProxyCandidates() {
-  proxyCandidatesCache = null
-}
 
 /** Lets other modules that write to accounts directly drop the proxy pool cache. */
 export function invalidateAccountCaches() {
-  invalidateProxyCandidates()
+  // Candidate reads are intentionally uncached so multiple app instances see
+  // account state changes immediately.
 }
 
 function positiveInteger(value: string | undefined, fallback: number) {
@@ -155,7 +153,7 @@ function positiveInteger(value: string | undefined, fallback: number) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback
 }
 
-function buildPool(): PoolLike {
+function buildPool(max = positiveInteger(process.env.POSTGRES_POOL_MAX, 20)): PoolLike {
   const { Pool, types } = runtimeRequire('pg') as {
     Pool: new (config: Record<string, unknown>) => PoolLike
     types: { setTypeParser(oid: number, parser: (value: string) => unknown): void }
@@ -169,7 +167,10 @@ function buildPool(): PoolLike {
 
   const connectionString = process.env.DATABASE_URL
   const ssl = /^(1|true|require)$/i.test(process.env.DATABASE_SSL || '')
-    ? { rejectUnauthorized: false }
+    ? {
+        rejectUnauthorized: process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false',
+        ...(process.env.DATABASE_SSL_CA ? { ca: process.env.DATABASE_SSL_CA } : {})
+      }
     : undefined
 
   const config: Record<string, unknown> = connectionString
@@ -183,7 +184,7 @@ function buildPool(): PoolLike {
         ssl
       }
 
-  config.max = positiveInteger(process.env.POSTGRES_POOL_MAX, 20)
+  config.max = max
   config.idleTimeoutMillis = positiveInteger(process.env.POSTGRES_IDLE_TIMEOUT_MS, 30_000)
   config.connectionTimeoutMillis = positiveInteger(process.env.POSTGRES_CONNECT_TIMEOUT_MS, 10_000)
 
@@ -268,10 +269,27 @@ const SCHEMA_SQL = `
     value TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS auth_login_attempts (
+    identifier TEXT PRIMARY KEY,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    window_started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    blocked_until TIMESTAMPTZ
+  );
+
+  CREATE TABLE IF NOT EXISTS account_proxy_slots (
+    account_id BIGINT NOT NULL,
+    slot INTEGER NOT NULL,
+    lease_token TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (account_id, slot)
+  );
+
   CREATE INDEX IF NOT EXISTS idx_accounts_ip_pool_id ON accounts(ip_pool_id);
   CREATE INDEX IF NOT EXISTS idx_accounts_proxy_pool
     ON accounts(id) WHERE status = 'active' AND subscription_status = 'active';
   CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+  CREATE INDEX IF NOT EXISTS idx_auth_login_attempts_blocked_until
+    ON auth_login_attempts(blocked_until);
 `
 
 async function initializeSchema(client: SqlClient) {
@@ -336,11 +354,14 @@ export function getDb(): Promise<SqlClient> {
 
 export async function closeDb() {
   const current = pool
+  const currentLocks = lockPool
   pool = null
+  lockPool = null
   readyPromise = null
-  proxyCandidatesCache = null
-  managedApiKeyHashesCache = null
-  if (current) await current.end()
+  await Promise.all([
+    current?.end(),
+    currentLocks?.end()
+  ])
 }
 
 async function query<T>(text: string, values?: unknown[]): Promise<QueryResult<T>> {
@@ -385,14 +406,29 @@ export async function getAccountsByIds(ids: number[]): Promise<Account[]> {
   return ids.map(id => byId.get(id)).filter((row): row is Account => Boolean(row))
 }
 
-export async function createAccount(input: { name?: string; auth_cookie: string }): Promise<Account> {
+export async function createAccount(input: {
+  name?: string
+  auth_cookie: string
+  workspace_id?: string
+  workspace_name?: string | null
+  allow_existing_cookie?: boolean
+}): Promise<Account> {
+  const authCookie = validateAuthCookieValue(input.auth_cookie)
+  if (!input.allow_existing_cookie) {
+    const duplicate = await queryRow<{ id: number }>(
+      'SELECT id FROM accounts WHERE auth_cookie = $1 LIMIT 1',
+      [authCookie]
+    )
+    if (duplicate) {
+      throw createError({ statusCode: 409, statusMessage: 'This auth cookie has already been imported' })
+    }
+  }
   const created = await queryRow<Account>(
-    `INSERT INTO accounts (name, auth_cookie, status)
-     VALUES ($1, $2, 'pending')
+    `INSERT INTO accounts (name, auth_cookie, workspace_id, workspace_name, status)
+     VALUES ($1, $2, $3, $4, 'pending')
      RETURNING *`,
-    [input.name || null, validateAuthCookieValue(input.auth_cookie)]
+    [input.name || null, authCookie, input.workspace_id || null, input.workspace_name || null]
   )
-  invalidateProxyCandidates()
   return created!
 }
 
@@ -406,6 +442,16 @@ export async function createAccounts(
   if (!inputs.length) return []
   const names = inputs.map(input => input.name || null)
   const cookies = inputs.map(input => validateAuthCookieValue(input.auth_cookie))
+  const existing = await queryRows<{ auth_cookie: string }>(
+    'SELECT DISTINCT auth_cookie FROM accounts WHERE auth_cookie = ANY($1::text[])',
+    [cookies]
+  )
+  if (existing.length) {
+    throw createError({
+      statusCode: 409,
+      statusMessage: `${existing.length} auth cookie value(s) have already been imported`
+    })
+  }
   const rows = await queryRows<Account>(
     `WITH inserted AS (
        INSERT INTO accounts (name, auth_cookie, status)
@@ -417,7 +463,6 @@ export async function createAccounts(
      SELECT * FROM inserted ORDER BY id ASC`,
     [names, cookies]
   )
-  invalidateProxyCandidates()
   return rows
 }
 
@@ -444,34 +489,29 @@ export async function updateAccount(
      RETURNING *`,
     values
   )
-  invalidateProxyCandidates()
   return updated
 }
 
 export async function deleteAccount(id: number) {
   const result = await query('DELETE FROM accounts WHERE id = $1', [id])
-  invalidateProxyCandidates()
   return { changes: result.rowCount }
 }
 
 export async function deleteAccounts(ids: number[]) {
   if (!ids.length) return { changes: 0 }
   const result = await query('DELETE FROM accounts WHERE id = ANY($1::bigint[])', [ids])
-  invalidateProxyCandidates()
   return { changes: result.rowCount }
 }
 
 export async function deleteNonMemberAccounts() {
   const result = await query(
-    `DELETE FROM accounts WHERE subscription_status IS NULL OR subscription_status <> 'active'`
+    `DELETE FROM accounts WHERE subscription_status IS NOT NULL AND subscription_status <> 'active'`
   )
-  invalidateProxyCandidates()
   return { changes: result.rowCount }
 }
 
 export async function getProxyCandidates(): Promise<Account[]> {
-  if (proxyCandidatesCache) return proxyCandidatesCache
-  const rows = await queryRows<Account>(`
+  return queryRows<Account>(`
     SELECT * FROM accounts
     WHERE status = 'active'
       AND subscription_status = 'active'
@@ -479,8 +519,6 @@ export async function getProxyCandidates(): Promise<Account[]> {
       AND upstream_api_key <> ''
     ORDER BY id ASC
   `)
-  proxyCandidatesCache = rows
-  return rows
 }
 
 export async function reserveProxyCandidate(): Promise<Account | undefined> {
@@ -506,21 +544,124 @@ export async function createManagedApiKey(input: {
      RETURNING *`,
     [input.name, input.key_hash, input.key_prefix]
   )
-  managedApiKeyHashesCache = null
   return created!
 }
 
 export async function deleteManagedApiKey(id: number) {
   const result = await query('DELETE FROM api_keys WHERE id = $1', [id])
-  managedApiKeyHashesCache = null
   return { changes: result.rowCount }
 }
 
 export async function getManagedApiKeyHashes(): Promise<Set<string>> {
-  if (managedApiKeyHashesCache) return managedApiKeyHashesCache
   const rows = await queryRows<{ key_hash: string }>('SELECT key_hash FROM api_keys')
-  managedApiKeyHashesCache = new Set(rows.map(row => row.key_hash))
-  return managedApiKeyHashesCache
+  return new Set(rows.map(row => row.key_hash))
+}
+
+export async function getAppSetting(key: string): Promise<string | undefined> {
+  const row = await queryRow<{ value: string }>(
+    'SELECT value FROM app_settings WHERE key = $1',
+    [key]
+  )
+  return row?.value
+}
+
+export async function setAppSetting(key: string, value: string) {
+  await query(`
+    INSERT INTO app_settings (key, value) VALUES ($1, $2)
+    ON CONFLICT (key) DO UPDATE SET value = excluded.value
+  `, [key, value])
+}
+
+export async function deleteAppSetting(key: string) {
+  await query('DELETE FROM app_settings WHERE key = $1', [key])
+}
+
+export async function withAdvisoryLock<T>(
+  key: string,
+  operation: () => Promise<T>,
+  options: { wait?: boolean } = {}
+): Promise<T | undefined> {
+  return withAdvisoryLocks([key], operation, options)
+}
+
+async function withAdvisoryLocks<T>(
+  keys: string[],
+  operation: () => Promise<T>,
+  options: { wait?: boolean } = {}
+): Promise<T | undefined> {
+  if (!lockPool) {
+    lockPool = buildPool(positiveInteger(process.env.POSTGRES_LOCK_POOL_MAX, 20))
+  }
+  const client = await lockPool.connect()
+  const acquired: string[] = []
+  try {
+    for (const key of keys) {
+      if (options.wait === false) {
+        const row = (await client.query<{ locked: boolean }>(
+          'SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked',
+          [key]
+        )).rows[0]
+        if (!row?.locked) return undefined
+      } else {
+        await client.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [key])
+      }
+      acquired.push(key)
+    }
+    return await operation()
+  } finally {
+    for (const key of acquired.reverse()) {
+      await client.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [key])
+        .catch(() => {})
+    }
+    client.release()
+  }
+}
+
+export function withAuthCookieLocks<T>(cookies: string[], operation: () => Promise<T>) {
+  void cookies
+  return withAdvisoryLock('account-import', operation) as Promise<T>
+}
+
+export function withAccountLocks<T>(ids: number[], operation: () => Promise<T>) {
+  const keys = [...new Set(ids)].sort((a, b) => a - b).map(id => `account-operation:${id}`)
+  return withAdvisoryLocks(keys, operation) as Promise<T>
+}
+
+export async function tryAcquireAccountProxySlot(
+  accountId: number,
+  concurrency: number,
+  leaseMs = 11 * 60 * 1000
+): Promise<(() => Promise<void>) | null> {
+  for (let slot = 0; slot < concurrency; slot++) {
+    const leaseToken = randomUUID()
+    const acquired = await queryRow<{ lease_token: string }>(`
+      INSERT INTO account_proxy_slots (account_id, slot, lease_token, expires_at)
+      VALUES ($1, $2, $3, now() + ($4 || ' milliseconds')::interval)
+      ON CONFLICT (account_id, slot) DO UPDATE SET
+        lease_token = excluded.lease_token,
+        expires_at = excluded.expires_at
+      WHERE account_proxy_slots.expires_at <= now()
+      RETURNING lease_token
+    `, [accountId, slot, leaseToken, String(leaseMs)])
+    if (!acquired) continue
+    let released = false
+    return async () => {
+      if (released) return
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await query(
+            'DELETE FROM account_proxy_slots WHERE account_id = $1 AND slot = $2 AND lease_token = $3',
+            [accountId, slot, leaseToken]
+          )
+          released = true
+          return
+        } catch {
+          if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 50 * (attempt + 1)))
+        }
+      }
+    }
+  }
+  return null
 }
 
 export async function createSession(token: string, hours = 24 * 7) {
@@ -544,4 +685,64 @@ export async function deleteSession(token: string) {
 
 export async function cleanExpiredSessions() {
   await query('DELETE FROM sessions WHERE expires_at <= now()')
+  await query(`
+    DELETE FROM auth_login_attempts
+    WHERE (blocked_until IS NULL AND window_started_at < now() - interval '1 day')
+       OR blocked_until < now() - interval '1 day'
+  `)
+  await query('DELETE FROM account_proxy_slots WHERE expires_at <= now()')
+  await query(`
+    DELETE FROM app_settings
+    WHERE key LIKE 'account_import_progress:%'
+      AND (value::jsonb->>'updatedAt')::timestamptz < now() - interval '1 day'
+  `)
+  await query(`
+    DELETE FROM app_settings setting
+    WHERE setting.key ~ '^(account_refresh_progress|referral_rewards):[0-9]+$'
+      AND NOT EXISTS (
+        SELECT 1 FROM accounts
+        WHERE accounts.id = split_part(setting.key, ':', 2)::bigint
+      )
+  `)
+}
+
+export async function checkLoginRateLimit(identifier: string) {
+  const row = await queryRow<{ attempts: number; blocked_until: string | null }>(`
+    SELECT attempts, blocked_until
+    FROM auth_login_attempts
+    WHERE identifier = $1
+  `, [identifier])
+  if (row?.blocked_until && new Date(row.blocked_until).getTime() > Date.now()) {
+    throw createError({ statusCode: 429, statusMessage: 'Too many login attempts. Try again later.' })
+  }
+}
+
+export async function recordLoginFailure(identifier: string) {
+  const row = await queryRow<{ attempts: number; blocked_until: string | null }>(`
+    INSERT INTO auth_login_attempts (identifier, attempts, window_started_at, blocked_until)
+    VALUES ($1, 1, now(), NULL)
+    ON CONFLICT (identifier) DO UPDATE SET
+      attempts = CASE
+        WHEN auth_login_attempts.window_started_at < now() - interval '15 minutes' THEN 1
+        ELSE auth_login_attempts.attempts + 1
+      END,
+      window_started_at = CASE
+        WHEN auth_login_attempts.window_started_at < now() - interval '15 minutes' THEN now()
+        ELSE auth_login_attempts.window_started_at
+      END,
+      blocked_until = CASE
+        WHEN auth_login_attempts.window_started_at >= now() - interval '15 minutes'
+          AND auth_login_attempts.attempts + 1 >= 10
+        THEN now() + interval '15 minutes'
+        ELSE NULL
+      END
+    RETURNING attempts, blocked_until
+  `, [identifier])
+  if (row?.blocked_until) {
+    throw createError({ statusCode: 429, statusMessage: 'Too many login attempts. Try again later.' })
+  }
+}
+
+export async function clearLoginFailures(identifier: string) {
+  await query('DELETE FROM auth_login_attempts WHERE identifier = $1', [identifier])
 }

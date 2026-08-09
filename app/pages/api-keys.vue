@@ -77,8 +77,12 @@ async function confirmRemoveKey() {
 }
 
 async function copy(value: string) {
-  await navigator.clipboard.writeText(value)
-  toast.add({ title: '已复制', color: 'success' })
+  try {
+    await navigator.clipboard.writeText(value)
+    toast.add({ title: '已复制', color: 'success' })
+  } catch {
+    toast.add({ title: '复制失败，请检查浏览器剪贴板权限', color: 'error' })
+  }
 }
 </script>
 

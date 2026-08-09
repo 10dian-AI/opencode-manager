@@ -7,6 +7,9 @@
   "engines": {
     "node": ">=20 <27"
   },
+  "overrides": {
+    "esbuild": "0.28.2"
+  },
   "scripts": {
     "build": "nuxt build",
     "dev": "nuxt dev",

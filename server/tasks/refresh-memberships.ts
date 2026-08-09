@@ -4,7 +4,11 @@ export default defineTask({
     description: 'Refresh account membership and quota state periodically'
   },
   async run() {
-    const results = await refreshDueMembershipAccounts()
+    const results = await withAdvisoryLock(
+      'scheduled-task:refresh-memberships',
+      refreshDueMembershipAccounts,
+      { wait: false }
+    ) || []
     return {
       result: {
         count: results.length,

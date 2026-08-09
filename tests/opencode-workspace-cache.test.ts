@@ -198,8 +198,28 @@ test('surfaces a safe error when a newly resolved workspace is invalid', async (
     .rejects.toThrow('Unable to parse account data from SSR page')
 })
 
-test('does not turn missing subscription markers into an inactive member', () => {
+test('keeps membership unknown when the subscription query is absent', () => {
   const info = parseOpenCodeHydration(hydration('wrk_MEMBER123', 'Member'))
+  expect(info.subscriptionStatus).toBe(null)
+})
+
+test('marks an account inactive when the subscription query returns no subscription', () => {
+  const info = parseOpenCodeHydration(`
+    <script>
+      _$HY.r["lite.subscription.get[\\"wrk_EXPIRED123\\"]"] = null;
+      id: "wrk_EXPIRED123", name: "Expired"
+    </script>
+  `)
+  expect(info.subscriptionStatus).toBe('inactive')
+})
+
+test('keeps membership unknown when the subscription query contains an error', () => {
+  const info = parseOpenCodeHydration(`
+    <script>
+      _$HY.r["lite.subscription.get[\\"wrk_ERROR123\\"]"] = { error: "timeout" };
+      id: "wrk_ERROR123", name: "Errored"
+    </script>
+  `)
   expect(info.subscriptionStatus).toBe(null)
 })
 

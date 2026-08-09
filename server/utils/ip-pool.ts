@@ -267,6 +267,10 @@ export function planStableIpAssignments(
 }
 
 export async function ensureStableIpAssignments() {
+  return await withAdvisoryLock('ip-pool-assignment', ensureStableIpAssignmentsOnce) || []
+}
+
+async function ensureStableIpAssignmentsOnce() {
   const [accounts, entries, blockSize] = await Promise.all([
     listAccounts(),
     listIpPoolEntries(),

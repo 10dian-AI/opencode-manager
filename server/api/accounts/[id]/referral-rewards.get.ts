@@ -8,7 +8,7 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 404, statusMessage: 'Account not found' })
   }
 
-  const cached = getCachedReferralRewards(id)
+  const cached = await hydrateCachedReferralRewards(id)
   return {
     cached: Boolean(cached),
     rewardIds: cached?.rewardIds ?? [],

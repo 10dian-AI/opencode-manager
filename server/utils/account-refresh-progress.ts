@@ -1,3 +1,5 @@
+import { deleteAppSetting, getAppSetting, setAppSetting } from './db'
+
 export type AccountRefreshPhase =
   | 'queued'
   | 'workspace'
@@ -45,6 +47,23 @@ interface ProgressEntry {
 }
 
 const progressByAccount = new Map<number, ProgressEntry>()
+const PROGRESS_SETTING_PREFIX = 'account_refresh_progress:'
+const pendingWrites = new Map<number, Promise<void>>()
+
+function persistProgress(accountId: number, snapshot: AccountRefreshProgress) {
+  const previous = pendingWrites.get(accountId) || Promise.resolve()
+  const write = previous
+    .then(() => setAppSetting(`${PROGRESS_SETTING_PREFIX}${accountId}`, JSON.stringify(snapshot)))
+    .catch(() => {})
+    .finally(() => {
+      if (pendingWrites.get(accountId) === write) pendingWrites.delete(accountId)
+    })
+  pendingWrites.set(accountId, write)
+}
+
+export async function flushAccountRefreshProgress(accountId: number) {
+  await pendingWrites.get(accountId)
+}
 
 function cloneProgress(progress: AccountRefreshProgress) {
   return { ...progress }
@@ -58,7 +77,9 @@ function updateEntry(
   const entry = progressByAccount.get(accountId)
   if (!entry || entry.token !== token) return
   update(entry.snapshot)
-  entry.snapshot.updatedAt = new Date().toISOString()
+  const nextTimestamp = Math.max(Date.now(), Date.parse(entry.snapshot.updatedAt) + 1)
+  entry.snapshot.updatedAt = new Date(nextTimestamp).toISOString()
+  persistProgress(accountId, entry.snapshot)
 }
 
 export function beginAccountRefreshProgress(
@@ -81,6 +102,7 @@ export function beginAccountRefreshProgress(
       error: null
     }
   })
+  persistProgress(accountId, progressByAccount.get(accountId)!.snapshot)
 
   return {
     update(phase, label) {
@@ -120,10 +142,25 @@ export function getAccountRefreshProgress(
   return progress ? cloneProgress(progress) : null
 }
 
+export async function getSharedAccountRefreshProgress(
+  accountId: number
+): Promise<AccountRefreshProgress | null> {
+  await flushAccountRefreshProgress(accountId)
+  const stored = await getAppSetting(`${PROGRESS_SETTING_PREFIX}${accountId}`)
+  const local = getAccountRefreshProgress(accountId)
+  if (!stored) return local
+  try {
+    return JSON.parse(stored) as AccountRefreshProgress
+  } catch {
+    return local
+  }
+}
+
 export function clearAccountRefreshProgress(accountId?: number) {
   if (accountId === undefined) {
     progressByAccount.clear()
     return
   }
   progressByAccount.delete(accountId)
+  void deleteAppSetting(`${PROGRESS_SETTING_PREFIX}${accountId}`).catch(() => {})
 }

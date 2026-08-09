@@ -5,12 +5,15 @@ export function createAuthToken() {
   return randomBytes(32).toString('hex')
 }
 
-export async function loginWithAdminKey(key: string) {
+export async function loginWithAdminKey(key: string, identifier = 'unknown') {
+  await checkLoginRateLimit(identifier)
   const config = getAppConfig()
   if (!timingSafeEqualString(key, config.admin_key)) {
+    await recordLoginFailure(identifier)
     throw createError({ statusCode: 401, statusMessage: 'Invalid admin key' })
   }
 
+  await clearLoginFailures(identifier)
   await cleanExpiredSessions()
   const token = createAuthToken()
   await createSession(token)

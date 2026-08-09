@@ -56,10 +56,16 @@ POSTGRES_DB=opencode_manager
 
 # 可选：连接池与超时
 POSTGRES_POOL_MAX=20
+POSTGRES_LOCK_POOL_MAX=20
 POSTGRES_IDLE_TIMEOUT_MS=30000
 POSTGRES_CONNECT_TIMEOUT_MS=10000
-# 托管数据库需要 SSL 时设为 true
+# 托管数据库需要 SSL 时设为 true；默认验证服务端证书
 DATABASE_SSL=false
+# 私有 CA 可直接传 PEM 内容；仅临时排障时才关闭验证
+DATABASE_SSL_CA=
+DATABASE_SSL_REJECT_UNAUTHORIZED=true
+# 仅在可信反向代理后开启，用于读取 X-Forwarded-For / Proto
+TRUST_PROXY=false
 ```
 
 表结构在首次连接时自动创建，使用 advisory lock 避免多实例同时启动时的 DDL 竞争。
@@ -122,7 +128,7 @@ bun run dev
 ## 数据
 
 - PostgreSQL：账号、会话、API 密钥、IP 池与设置全部存库，应用本身不再写本地文件
-- Compose 部署时数据保存在 `pgdata` 命名卷里
+- Compose 部署时数据保存在 `postgres-data` 命名卷里
 - Cookie 仅存服务端；账号列表和通用详情不回传 `auth_cookie`，编辑页通过管理员鉴权的禁缓存接口按需读取
 
 ## API

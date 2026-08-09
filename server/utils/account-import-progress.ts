@@ -1,7 +1,9 @@
 import {
   getAccountRefreshProgress,
+  getSharedAccountRefreshProgress,
   type AccountRefreshProgress
 } from './account-refresh-progress'
+import { deleteAppSetting, getAppSetting, setAppSetting } from './db'
 
 export type AccountImportPhase =
   | 'validating'
@@ -53,6 +55,30 @@ interface ImportProgressEntry {
 }
 
 const progressByOperation = new Map<string, ImportProgressEntry>()
+const PROGRESS_SETTING_PREFIX = 'account_import_progress:'
+const pendingWrites = new Map<string, Promise<void>>()
+
+function persistProgress(entry: ImportProgressEntry) {
+  const accounts = entry.accountIds
+    .map(getAccountRefreshProgress)
+    .filter((progress): progress is AccountRefreshProgress => Boolean(progress))
+  const operationId = entry.snapshot.operationId
+  const previous = pendingWrites.get(operationId) || Promise.resolve()
+  const write = previous
+    .then(() => setAppSetting(
+      `${PROGRESS_SETTING_PREFIX}${operationId}`,
+      JSON.stringify({ ...entry.snapshot, accountIds: entry.accountIds, accounts })
+    ))
+    .catch(() => {})
+    .finally(() => {
+      if (pendingWrites.get(operationId) === write) pendingWrites.delete(operationId)
+    })
+  pendingWrites.set(operationId, write)
+}
+
+export async function flushAccountImportProgress(operationId: string) {
+  await pendingWrites.get(operationId)
+}
 
 function removeExpiredProgress() {
   const now = Date.now()
@@ -74,7 +100,9 @@ function updateEntry(
   const entry = progressByOperation.get(operationId)
   if (!entry || entry.token !== token) return
   update(entry)
-  entry.snapshot.updatedAt = new Date().toISOString()
+  const nextTimestamp = Math.max(Date.now(), Date.parse(entry.snapshot.updatedAt) + 1)
+  entry.snapshot.updatedAt = new Date(nextTimestamp).toISOString()
+  persistProgress(entry)
 }
 
 export function beginAccountImportProgress(
@@ -100,6 +128,7 @@ export function beginAccountImportProgress(
       error: null
     }
   })
+  persistProgress(progressByOperation.get(operationId)!)
 
   return {
     update(phase, label) {
@@ -152,10 +181,35 @@ export function getAccountImportProgress(
   }
 }
 
+export async function getSharedAccountImportProgress(
+  operationId: string
+): Promise<AccountImportProgress | null> {
+  await flushAccountImportProgress(operationId)
+  const progress = getAccountImportProgress(operationId)
+  const stored = await getAppSetting(`${PROGRESS_SETTING_PREFIX}${operationId}`)
+  if (!stored) return progress
+  try {
+    const shared = JSON.parse(stored) as AccountImportProgress & { accountIds?: number[] }
+    const { accountIds: sharedAccountIds, ...sharedProgress } = shared
+    const base = sharedProgress
+    if (!base.accountTotal) return base
+    const accountIds = progressByOperation.get(operationId)?.accountIds ||
+      sharedAccountIds || base.accounts.map(account => account.accountId)
+    const accounts = await Promise.all(accountIds.map(getSharedAccountRefreshProgress))
+    return {
+      ...base,
+      accounts: accounts.filter((item): item is AccountRefreshProgress => Boolean(item))
+    }
+  } catch {
+    return progress
+  }
+}
+
 export function clearAccountImportProgress(operationId?: string) {
   if (operationId === undefined) {
     progressByOperation.clear()
     return
   }
   progressByOperation.delete(operationId)
+  void deleteAppSetting(`${PROGRESS_SETTING_PREFIX}${operationId}`).catch(() => {})
 }

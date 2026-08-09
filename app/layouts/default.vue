@@ -49,9 +49,24 @@ const links = [
     </UHeader>
 
     <UMain class="ocm-main">
-      <UContainer class="py-8 lg:py-10">
+      <UContainer class="py-8 pb-24 lg:py-10 md:pb-10">
         <slot />
       </UContainer>
     </UMain>
+
+    <nav class="fixed inset-x-3 bottom-3 z-50 grid grid-cols-4 gap-1 rounded-2xl border border-default bg-default/95 p-2 shadow-xl backdrop-blur md:hidden">
+      <UButton
+        v-for="link in links"
+        :key="link.to"
+        :to="link.to"
+        :variant="route.path === link.to ? 'soft' : 'ghost'"
+        :color="route.path === link.to ? 'primary' : 'neutral'"
+        :icon="link.icon"
+        size="sm"
+        class="justify-center"
+      >
+        <span class="sr-only">{{ link.label }}</span>
+      </UButton>
+    </nav>
   </div>
 </template>

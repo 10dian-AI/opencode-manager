@@ -12,10 +12,10 @@ export default defineEventHandler(async (event) => {
     })
   }
 
-  const account = await createAccount({
+  const account = await withAuthCookieLocks([authCookie], () => createAccount({
     name: body.name,
     auth_cookie: authCookie
-  })
+  }))
   await ensureStableIpAssignments()
   const assignedAccount = (await getAccount(account.id))!
 
