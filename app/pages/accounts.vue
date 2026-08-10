@@ -47,7 +47,7 @@ const editCookieRequestGeneration = ref(0)
 const actionAccount = ref<Account | null>(null)
 const submitting = ref(false)
 const importProgress = ref<AccountImportProgress | null>(null)
-const accountAction = ref<'referral' | 'cancel-renewal' | null>(null)
+const accountAction = ref<'referral' | 'cancel-renewal' | 'enable-chinese' | null>(null)
 const referralRewardIds = ref<string[]>([])
 const usedReferralRewardIds = ref<string[]>([])
 const referralRewardsCached = ref<boolean | null>(null)
@@ -306,6 +306,36 @@ async function onCancelRenewal() {
   } catch (e: any) {
     toast.add({ title: e?.data?.statusMessage || e?.message || '关闭续费失败', color: 'error' })
   } finally {
+    accountAction.value = null
+  }
+}
+
+async function onEnableChineseModels(account: Account) {
+  if (!account.auth_cookie) {
+    toast.add({ title: '该账号未设置 Cookie', color: 'error' })
+    return
+  }
+
+  actionId.value = account.id
+  accountAction.value = 'enable-chinese'
+  try {
+    const result = await $fetch('/api/accounts/enable-chinese-models', {
+      method: 'POST',
+      body: {
+        auth_cookie: account.auth_cookie
+      }
+    })
+    toast.add({
+      title: result.message || '已开启中国模型支持',
+      color: 'success'
+    })
+  } catch (e: any) {
+    toast.add({
+      title: e?.data?.statusMessage || '开启中国模型失败',
+      color: 'error'
+    })
+  } finally {
+    actionId.value = null
     accountAction.value = null
   }
 }
@@ -656,6 +686,27 @@ async function copyReferralLink(code: string) {
     toast.add({ title: '复制失败，请检查浏览器剪贴板权限', color: 'error' })
   }
 }
+
+async function exportKeys() {
+  try {
+    const response = await $fetch('/api/accounts/export-keys')
+    const blob = new Blob([response], { type: 'text/plain' })
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `api-keys-${Date.now()}.txt`
+    document.body.appendChild(a)
+    a.click()
+    window.URL.revokeObjectURL(url)
+    document.body.removeChild(a)
+    toast.add({ title: 'API Key已导出', color: 'success' })
+  } catch (e: any) {
+    toast.add({
+      title: e?.data?.statusMessage || '导出失败',
+      color: 'error'
+    })
+  }
+}
 </script>
 
 <template>
@@ -683,6 +734,14 @@ async function copyReferralLink(code: string) {
             class="size-3.5 animate-spin text-muted"
           />
         </div>
+        <UButton
+          icon="i-lucide-download"
+          color="neutral"
+          variant="outline"
+          @click="exportKeys"
+        >
+          导出API Key
+        </UButton>
         <UButton
           icon="i-lucide-shield-check"
           color="neutral"
@@ -1012,6 +1071,15 @@ async function copyReferralLink(code: string) {
                     variant="ghost"
                     title="账户操作"
                     @click="openActionsModal(account)"
+                  />
+                  <UButton
+                    icon="i-lucide-globe"
+                    size="xs"
+                    color="neutral"
+                    variant="ghost"
+                    title="开启中国模型"
+                    :loading="actionId === account.id && accountAction === 'enable-chinese'"
+                    @click="onEnableChineseModels(account)"
                   />
                   <UButton
                     icon="i-lucide-shield-check"

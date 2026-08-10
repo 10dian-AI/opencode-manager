@@ -27,7 +27,7 @@ export async function isValidApiKey(key: string): Promise<boolean> {
   return (await getManagedApiKeyHashes()).has(hash)
 }
 
-export async function requireApiKey(event: H3Event): Promise<string> {
+export async function requireApiKey(event: H3Event): Promise<{ key: string; keyId: number | null; keyPrefix: string }> {
   const authorization = getHeader(event, 'authorization') || ''
   const bearer = authorization.match(/^Bearer\s+(.+)$/i)?.[1]
   const key = bearer || getHeader(event, 'x-api-key') || ''
@@ -44,5 +44,15 @@ export async function requireApiKey(event: H3Event): Promise<string> {
       }
     })
   }
-  return key
+
+  // Try to find the managed API key ID
+  const hash = hashApiKey(key)
+  const managedKeys = await listManagedApiKeys()
+  const managedKey = managedKeys.find(k => k.key_hash === hash)
+
+  return {
+    key,
+    keyId: managedKey?.id || null,
+    keyPrefix: apiKeyPrefix(key)
+  }
 }

@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenCode Manager - 监控面板</title>
+  <style>
+    :root {
+      --bg-primary: #05070C;
+      --bg-secondary: #0A0D12;
+      --bg-tertiary: #0F131C;
+      --bg-elevated: #161D2B;
+      --accent: #38BDF8;
+      --accent-muted: #1E3A8A;
+      --text-primary: #F8FAFC;
+      --text-secondary: #94A3B8;
+      --border: #1E293B;
+      --success: #6EE7B7;
+      --error: #F87171;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.6;
+      padding: clamp(1rem, 3vw, 2rem);
+    }
+
+    .monitor-shell {
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    .monitor-header {
+      margin-bottom: clamp(1.5rem, 4vw, 3rem);
+    }
+
+    .monitor-title {
+      font-size: clamp(1.5rem, 3.5vw, 2.5rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 0.5rem;
+    }
+
+    .monitor-subtitle {
+      color: var(--text-secondary);
+      font-size: clamp(0.875rem, 1.5vw, 1rem);
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: clamp(1rem, 2vw, 1.5rem);
+      margin-bottom: clamp(2rem, 4vw, 3rem);
+    }
+
+    .stat-card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: clamp(1.25rem, 3vw, 1.5rem);
+    }
+
+    .stat-label {
+      color: var(--text-secondary);
+      font-size: clamp(0.8125rem, 1.5vw, 0.875rem);
+      margin-bottom: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .stat-value {
+      font-size: clamp(2rem, 4vw, 2.5rem);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      color: var(--accent);
+    }
+
+    .stat-unit {
+      font-size: clamp(1rem, 2vw, 1.25rem);
+      color: var(--text-secondary);
+      margin-left: 0.25rem;
+    }
+
+    .models-section {
+      margin-top: clamp(2rem, 4vw, 3rem);
+    }
+
+    .section-title {
+      font-size: clamp(1.25rem, 2.5vw, 1.5rem);
+      font-weight: 600;
+      margin-bottom: clamp(1rem, 2vw, 1.5rem);
+    }
+
+    .models-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: clamp(1rem, 2vw, 1.5rem);
+    }
+
+    .model-card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: clamp(1.25rem, 3vw, 1.5rem);
+    }
+
+    .model-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+
+    .model-name {
+      font-size: clamp(1rem, 2vw, 1.125rem);
+      font-weight: 600;
+    }
+
+    .success-badge {
+      font-size: clamp(0.875rem, 1.5vw, 1rem);
+      font-weight: 700;
+      padding: 0.25rem 0.75rem;
+      border-radius: 999px;
+      background: var(--accent-muted);
+      color: var(--accent);
+    }
+
+    .success-badge.high {
+      background: rgba(110, 231, 183, 0.1);
+      color: var(--success);
+    }
+
+    .success-badge.medium {
+      background: rgba(251, 191, 36, 0.1);
+      color: #FCD34D;
+    }
+
+    .success-badge.low {
+      background: rgba(248, 113, 113, 0.1);
+      color: var(--error);
+    }
+
+    .model-stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+    }
+
+    .model-stat {
+      text-align: center;
+    }
+
+    .model-stat-label {
+      font-size: clamp(0.75rem, 1.5vw, 0.8125rem);
+      color: var(--text-secondary);
+      margin-bottom: 0.25rem;
+    }
+
+    .model-stat-value {
+      font-size: clamp(1.125rem, 2vw, 1.25rem);
+      font-weight: 600;
+    }
+
+    .progress-bar {
+      height: 8px;
+      background: var(--bg-tertiary);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), var(--success));
+      border-radius: 999px;
+      transition: width 0.3s ease;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 3rem;
+      color: var(--text-secondary);
+    }
+
+    .error {
+      background: rgba(248, 113, 113, 0.1);
+      color: var(--error);
+      padding: 1rem 1.5rem;
+      border-radius: 12px;
+      border: 1px solid rgba(248, 113, 113, 0.2);
+    }
+
+    .refresh-time {
+      color: var(--text-secondary);
+      font-size: clamp(0.8125rem, 1.5vw, 0.875rem);
+      text-align: right;
+      margin-top: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="monitor-shell">
+    <div class="monitor-header">
+      <h1 class="monitor-title">OpenCode Manager 监控面板</h1>
+      <p class="monitor-subtitle">实时监控号池状态和模型调用情况</p>
+    </div>
+
+    <div id="stats-container">
+      <div class="loading">加载中...</div>
+    </div>
+
+    <div class="models-section">
+      <h2 class="section-title">模型调用成功率（过去5小时）</h2>
+      <div id="models-container">
+        <div class="loading">加载中...</div>
+      </div>
+    </div>
+
+    <div class="refresh-time" id="refresh-time"></div>
+  </div>
+
+  <script>
+    const API_BASE = window.location.protocol + '//' + window.location.hostname + ':3000'
+
+    async function fetchStats() {
+      try {
+        const response = await fetch(`${API_BASE}/api/monitor/stats`)
+        if (!response.ok) throw new Error('Failed to fetch stats')
+        return await response.json()
+      } catch (error) {
+        console.error('Error fetching stats:', error)
+        return null
+      }
+    }
+
+    async function fetchModels() {
+      try {
+        const response = await fetch(`${API_BASE}/api/monitor/models`)
+        if (!response.ok) throw new Error('Failed to fetch models')
+        return await response.json()
+      } catch (error) {
+        console.error('Error fetching models:', error)
+        return null
+      }
+    }
+
+    function renderStats(data) {
+      const container = document.getElementById('stats-container')
+      if (!data) {
+        container.innerHTML = '<div class="error">获取统计数据失败</div>'
+        return
+      }
+
+      container.innerHTML = `
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-label">活跃账号</div>
+            <div class="stat-value">${data.active_accounts}<span class="stat-unit">个</span></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">总账号数</div>
+            <div class="stat-value">${data.total_accounts}<span class="stat-unit">个</span></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">可用配额</div>
+            <div class="stat-value">$${data.total_quota.toFixed(2)}</div>
+          </div>
+        </div>
+      `
+    }
+
+    function getSuccessRateClass(rate) {
+      if (rate >= 90) return 'high'
+      if (rate >= 70) return 'medium'
+      return 'low'
+    }
+
+    function renderModels(data) {
+      const container = document.getElementById('models-container')
+      if (!data) {
+        container.innerHTML = '<div class="error">获取模型数据失败</div>'
+        return
+      }
+
+      if (data.models.length === 0) {
+        container.innerHTML = '<div class="loading">过去5小时内暂无调用记录</div>'
+        return
+      }
+
+      container.innerHTML = `
+        <div class="models-grid">
+          ${data.models.map(model => `
+            <div class="model-card">
+              <div class="model-header">
+                <div class="model-name">${model.model}</div>
+                <div class="success-badge ${getSuccessRateClass(model.success_rate)}">
+                  ${model.success_rate.toFixed(1)}%
+                </div>
+              </div>
+              <div class="model-stats">
+                <div class="model-stat">
+                  <div class="model-stat-label">总调用</div>
+                  <div class="model-stat-value">${model.total}</div>
+                </div>
+                <div class="model-stat">
+                  <div class="model-stat-label">成功</div>
+                  <div class="model-stat-value" style="color: var(--success)">${model.success}</div>
+                </div>
+                <div class="model-stat">
+                  <div class="model-stat-label">失败</div>
+                  <div class="model-stat-value" style="color: var(--error)">${model.errors}</div>
+                </div>
+              </div>
+              <div class="progress-bar">
+                <div class="progress-fill" style="width: ${model.success_rate}%"></div>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      `
+    }
+
+    function updateRefreshTime() {
+      const now = new Date().toLocaleString('zh-CN', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      })
+      document.getElementById('refresh-time').textContent = `最后更新: ${now}`
+    }
+
+    async function refresh() {
+      const [stats, models] = await Promise.all([
+        fetchStats(),
+        fetchModels()
+      ])
+      renderStats(stats)
+      renderModels(models)
+      updateRefreshTime()
+    }
+
+    // Initial load
+    refresh()
+
+    // Auto refresh every 30 seconds
+    setInterval(refresh, 30000)
+  </script>
+</body>
+</html>
