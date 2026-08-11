@@ -1,5 +1,5 @@
 export default defineEventHandler(async (event) => {
-  await requireSession(event)
+  await requireAuth(event)
 
   try {
     const accounts = await getProxyCandidates()

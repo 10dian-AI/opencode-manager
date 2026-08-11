@@ -1,8 +1,8 @@
-import { loadOpenCodeAccountInfo, buildAuthCookie } from '~/server/utils/opencode'
+import { fetchOpenCodeAccount, buildAuthCookie } from '~/server/utils/opencode'
 import { discoverChineseModelsServerId, enableOpenCodeChineseModels } from '~/server/utils/opencode-chinese-models'
 
 export default defineEventHandler(async (event) => {
-  await requireSession(event)
+  await requireAuth(event)
 
   const body = await readBody(event)
   const { auth_cookie } = body
@@ -16,7 +16,7 @@ export default defineEventHandler(async (event) => {
 
   try {
     // First, get account info to get workspace ID and HTML for server ID discovery
-    const accountInfo = await loadOpenCodeAccountInfo(auth_cookie, 'workspace-page')
+    const accountInfo = await fetchOpenCodeAccount(auth_cookie, null)
 
     if (!accountInfo.workspaceId) {
       throw createError({
