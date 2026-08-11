@@ -19,10 +19,7 @@ services:
     # No published ports: only the app needs to reach the database.
 
   app:
-    image: ghcr.io/10dian-AI/opencode-manager:latest
-    # Swap the image for a local build with: docker compose build
-    build:
-      context: .
+    image: ghcr.io/10dian-ai/opencode-manager:latest
     restart: unless-stopped
     depends_on:
       postgres:

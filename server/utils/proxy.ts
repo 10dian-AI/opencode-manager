@@ -333,9 +333,6 @@ export async function proxyChatCompletions(
       } catch (error) {
         await releaseAccountSlot()
         throw error
-      } finally {
-        // Ensure slot is always released in case of unexpected errors
-        await releaseAccountSlot().catch(() => {})
       }
     }, {
       signal: upstreamSignal,
@@ -428,7 +425,8 @@ export async function proxyModels(event: H3Event): Promise<Response> {
       return jsonError(503, 'No active accounts are available in the pool', 'pool_unavailable')
     }
     const { account } = slot
-    release = slot.release
+    const releaseSlot = slot.release
+    release = releaseSlot
     const fetchImpl = await createAccountFetch(account)
     const response = await fetchImpl(`${GO_BASE}/models`, {
       headers: upstreamHeaders(event, account.upstream_api_key || undefined),
@@ -442,7 +440,7 @@ export async function proxyModels(event: H3Event): Promise<Response> {
     } else if (!response.ok) {
       refreshAfterUpstreamError(account.id)
     }
-    return responseHoldingAccountSlot(response, release, signal)
+    return responseHoldingAccountSlot(response, releaseSlot, signal)
   } catch {
     if (release) await release()
     if (lifecycle.signal.aborted) {

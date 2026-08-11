@@ -1,5 +1,3 @@
-import { loginWithAdminKey } from '~/server/utils/auth'
-
 export default defineEventHandler(async (event) => {
   const body = await readBody<{ key?: string }>(event)
   if (!body?.key) {

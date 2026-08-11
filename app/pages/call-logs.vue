@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { CallLog } from '~/server/utils/call-logs'
+import type { CallLog } from '~~/server/utils/call-logs'
 
 const toast = useToast()
 const loading = ref(false)

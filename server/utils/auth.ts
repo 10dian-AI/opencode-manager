@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
-const COOKIE_NAME = 'ocm_session'
+export const COOKIE_NAME = 'ocm_session'
 
 export function createAuthToken() {
   return randomBytes(32).toString('hex')
@@ -44,5 +44,3 @@ function timingSafeEqualString(a: string, b: string) {
   if (left.length !== right.length) return false
   return timingSafeEqual(left, right)
 }
-
-export { COOKIE_NAME }

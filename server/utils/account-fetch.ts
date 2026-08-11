@@ -7,6 +7,8 @@ import type { Account } from './db'
 import { getIpPoolEntry } from './ip-pool'
 import { createSocksProxyFetch } from './socks-fetch'
 
+declare const Bun: unknown | undefined
+
 interface ProxyTransport {
   proxyUrl: string
   fetch: typeof fetch

@@ -1,7 +1,3 @@
-import { fetchOpenCodeAccount, buildAuthCookie } from '~/server/utils/opencode'
-import { discoverChineseModelsServerId, enableOpenCodeChineseModels } from '~/server/utils/opencode-chinese-models'
-import { requireAuth } from '~/server/utils/auth'
-
 export default defineEventHandler(async (event) => {
   await requireAuth(event)
 

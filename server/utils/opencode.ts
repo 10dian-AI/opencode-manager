@@ -297,13 +297,63 @@ export function parseOpenCodeHydration(
   return result
 }
 
-export function serializeOpenCodeServerArgs(args: string[]) {
+type OpenCodeServerArg =
+  | null
+  | boolean
+  | number
+  | string
+  | OpenCodeServerArg[]
+  | { [key: string]: OpenCodeServerArg }
+
+function serializeOpenCodeServerArg(
+  value: OpenCodeServerArg,
+  nextReferenceId: () => number
+): Record<string, unknown> {
+  if (value === null) return { t: 2, s: 0 }
+  if (typeof value === 'string') return { t: 1, s: value }
+  if (typeof value === 'boolean') return { t: 2, s: value ? 2 : 3 }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      throw new TypeError('OpenCode server arguments only support finite numbers')
+    }
+    return { t: 0, s: value }
+  }
+  if (Array.isArray(value)) {
+    const id = nextReferenceId()
+    return {
+      t: 9,
+      i: id,
+      l: value.length,
+      a: value.map(item => serializeOpenCodeServerArg(item, nextReferenceId)),
+      o: 0
+    }
+  }
+  if (Object.getPrototypeOf(value) !== Object.prototype) {
+    throw new TypeError('OpenCode server arguments only support plain objects')
+  }
+
+  const entries = Object.entries(value)
+  const id = nextReferenceId()
+  return {
+    t: 10,
+    i: id,
+    p: {
+      k: entries.map(([key]) => key),
+      v: entries.map(([, item]) => serializeOpenCodeServerArg(item, nextReferenceId))
+    },
+    o: 0
+  }
+}
+
+export function serializeOpenCodeServerArgs(args: OpenCodeServerArg[]) {
+  let nextId = 1
+  const nextReferenceId = () => nextId++
   return {
     t: {
       t: 9,
       i: 0,
       l: args.length,
-      a: args.map(value => ({ t: 1, s: value })),
+      a: args.map(value => serializeOpenCodeServerArg(value, nextReferenceId)),
       o: 0
     },
     f: 31,
@@ -311,7 +361,7 @@ export function serializeOpenCodeServerArgs(args: string[]) {
   }
 }
 
-async function loadOpenCodeRouteModules(
+export async function loadOpenCodeRouteModules(
   html: string,
   fetchImpl: typeof fetch = fetch
 ) {

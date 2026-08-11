@@ -1,5 +1,4 @@
-import { listAccounts } from '~/server/utils/db'
-import { QUOTA_LIMITS_USD } from '~/server/utils/constants'
+import type { Account } from '../utils/db'
 
 export default defineEventHandler(async (event) => {
   await requireAuth(event)
@@ -32,7 +31,7 @@ export default defineEventHandler(async (event) => {
 })
 
 function sumRemaining(
-  accounts: Awaited<ReturnType<typeof listAccounts>>,
+  accounts: Account[],
   field: 'rolling_usage' | 'weekly_usage' | 'monthly_usage',
   limit: number
 ) {
@@ -50,7 +49,7 @@ function avgRemaining(values: Array<number | null | undefined>) {
 }
 
 function knownLimit(
-  accounts: Awaited<ReturnType<typeof listAccounts>>,
+  accounts: Account[],
   field: 'rolling_usage' | 'weekly_usage' | 'monthly_usage',
   limit: number
 ) {

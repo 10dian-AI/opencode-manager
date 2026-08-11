@@ -1,7 +1,3 @@
-import { validateAuthCookieValue } from '~/server/utils/auth-cookie'
-import { createAccount, getAccount, withAuthCookieLocks, ensureStableIpAssignments } from '~/server/utils/db'
-import { expandAccountWorkspacesByIds, refreshAccountsByIds, updateAccountPollSchedule, toPublicAccount } from '~/server/utils/accounts'
-
 export default defineEventHandler(async (event) => {
   await requireAuth(event)
 

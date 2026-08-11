@@ -125,6 +125,36 @@ describe('OpenCode referral rewards', () => {
     expect(await discoverReferralApplyServerId(html, fakeFetch)).toBe(applyId)
   })
 
+  test('serializes plain object action arguments using Seroval nodes', () => {
+    expect(
+      serializeOpenCodeServerArgs([
+        'wrk_TEST',
+        { enableChineseModels: true }
+      ])
+    ).toEqual({
+      t: {
+        t: 9,
+        i: 0,
+        l: 2,
+        a: [
+          { t: 1, s: 'wrk_TEST' },
+          {
+            t: 10,
+            i: 1,
+            p: {
+              k: ['enableChineseModels'],
+              v: [{ t: 2, s: 2 }]
+            },
+            o: 0
+          }
+        ],
+        o: 0
+      },
+      f: 31,
+      m: []
+    })
+  })
+
   test('serializes and posts action arguments using the SolidStart server protocol', async () => {
     const requests: Array<{ input: string; init?: RequestInit }> = []
     const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => {

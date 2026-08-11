@@ -60,7 +60,7 @@ function ensureAccountPollSchedule(now = Date.now()): Promise<void> {
   if (accountPollScheduleHydrated) return Promise.resolve()
   if (accountPollScheduleHydration) return accountPollScheduleHydration
 
-  accountPollScheduleHydration = listAccounts()
+  const hydration = listAccounts()
     .then(accounts => {
       accountPollSchedule.hydrate(accounts, now)
       accountPollScheduleHydrated = true
@@ -71,7 +71,8 @@ function ensureAccountPollSchedule(now = Date.now()): Promise<void> {
       accountPollScheduleHydration = null
       throw error
     })
-  return accountPollScheduleHydration
+  accountPollScheduleHydration = hydration
+  return hydration
 }
 
 export async function updateAccountPollSchedule(account: Account) {

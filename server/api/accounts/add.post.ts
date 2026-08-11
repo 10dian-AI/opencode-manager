@@ -1,7 +1,3 @@
-import { createAccount, toPublicAccount } from '~/server/utils/db'
-import { refreshAccount } from '~/server/utils/accounts'
-import { requireAuth } from '~/server/utils/auth'
-
 export default defineEventHandler(async (event) => {
   await requireAuth(event)
 

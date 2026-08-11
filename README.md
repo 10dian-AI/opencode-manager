@@ -1,6 +1,6 @@
 # OpenCode Manager
 
-项目仓库：https://github.com/10dian-AI/opencode-manager
+项目仓库：https://github.com/10dian-ai/opencode-manager
 
 Nuxt UI 全栈号池管理：PostgreSQL 存储账号，通过浏览器 Cookie 自动抓取 OpenCode SSR 页面解析 workspace / 用量。
 
@@ -195,10 +195,17 @@ docker compose down -v         # 停止并删除数据卷，会清空数据库
 - 数据存放在 `postgres-data` 命名卷
 - 应用以非 root 的 `bun` 用户运行，配置全部走环境变量，不需要挂载 `config.yaml`
 
-默认直接拉取已发布的镜像 `ghcr.io/10dian-ai/opencode-manager:latest`。想用本地源码构建：
+默认直接拉取已发布的镜像 `ghcr.io/10dian-ai/opencode-manager:latest`。更新镜像并重建容器：
 
 ```bash
-docker compose up -d --build
+docker compose pull app
+docker compose up -d
+```
+
+想用本地源码构建，可直接使用仓库中的 `Dockerfile`：
+
+```bash
+docker build -t opencode-manager:local .
 ```
 
 ### 单独运行容器
@@ -222,4 +229,4 @@ node .output/server/index.mjs
 
 Nitro 构建显式使用 `node-server` preset，数据库层通过 `pg` 连接池访问 PostgreSQL，`pg` 是纯 JavaScript 实现，不需要原生编译，Bun 和 Node 运行时都能直接加载。
 
-推送到 `main` 会发布 `main`、`latest` 和提交 SHA 标签；推送 `v*` 标签会额外发布对应的语义版本标签。工作流也支持手动触发。amd64 与 arm64 镜像分别在 GitHub 原生架构 Runner 上构建，再合并为多架构 Manifest，不使用 QEMU；镜像安装、构建和运行均使用 Bun。
+推送到 `master` 会发布 `master`、`latest` 和提交 SHA 标签；推送 `v*.*.*` 标签会额外发布对应的语义版本标签。当前工作流由 GitHub 的 Ubuntu Runner 使用 Buildx 构建并发布镜像。

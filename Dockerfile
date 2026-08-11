@@ -5,7 +5,7 @@ WORKDIR /app
 COPY package.json bun.lock nuxt.config.ts tsconfig.json ./
 # pg is pure JavaScript, so no native build scripts are needed.
 RUN BUN_FEATURE_FLAG_DISABLE_NATIVE_DEPENDENCY_LINKER=1 \
-    bun install --ignore-scripts
+    bun install --frozen-lockfile --ignore-scripts
 
 COPY app ./app
 COPY public ./public

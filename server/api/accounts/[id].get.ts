@@ -1,5 +1,3 @@
-import { getAccount, toPublicAccount } from '~/server/utils/accounts'
-
 export default defineEventHandler(async (event) => {
   await requireAuth(event)
   const id = Number(getRouterParam(event, 'id'))
