@@ -1,6 +1,6 @@
 # OpenCode Manager
 
-项目仓库：https://github.com/10dian-ai/opencode-manager
+项目仓库：https://github.com/10dian-AI/opencode-manager
 
 Nuxt UI 全栈号池管理：PostgreSQL 存储账号，通过浏览器 Cookie 自动抓取 OpenCode SSR 页面解析 workspace / 用量。
 

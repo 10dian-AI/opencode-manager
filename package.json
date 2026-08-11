@@ -1,6 +1,6 @@
 {
   "name": "opencode-manager",
-  "repository": "https://github.com/10dian-ai/opencode-manager",
+  "repository": "https://github.com/10dian-AI/opencode-manager",
   "type": "module",
   "private": true,
   "packageManager": "bun@1.3.14",
