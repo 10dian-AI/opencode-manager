@@ -1,3 +1,6 @@
+import { requireAuth } from '~/server/utils/auth'
+import { createManagedApiKey, generateApiKey, hashApiKey, apiKeyPrefix, isUniqueViolation } from '~/server/utils/api-keys'
+
 export default defineEventHandler(async (event) => {
   await requireAuth(event)
   const body = await readBody<{ name?: string; key?: string }>(event)

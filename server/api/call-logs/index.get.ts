@@ -1,3 +1,6 @@
+import { requireAuth } from '~/server/utils/auth'
+import { queryCallLogs } from '~/server/utils/call-logs'
+
 export default defineEventHandler(async (event) => {
   await requireAuth(event)
 

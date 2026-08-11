@@ -1,3 +1,5 @@
+import { listAccounts } from '~/server/utils/db'
+
 export default defineEventHandler(async (event) => {
   await requireAuth(event)
 

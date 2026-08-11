@@ -1,3 +1,5 @@
+import { requireAuth, logoutToken, COOKIE_NAME } from '~/server/utils/auth'
+
 export default defineEventHandler(async (event) => {
   const token = await requireAuth(event)
   await logoutToken(token)

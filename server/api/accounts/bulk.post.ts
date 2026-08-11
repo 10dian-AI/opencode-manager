@@ -1,3 +1,5 @@
+import { getAccountsByIds, checkAccountRiskControlsByIds, updateAccountSettings, refreshAccountsByIds, toPublicAccount } from '~/server/utils/accounts'
+
 type BulkAccountAction = 'refresh' | 'risk-control-check' | 'enable' | 'disable'
 
 export default defineEventHandler(async (event) => {

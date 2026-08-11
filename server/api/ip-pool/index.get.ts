@@ -1,3 +1,5 @@
+import { listPublicIpPoolEntries, getIpPoolBlockSize } from '~/server/utils/ip-pool'
+
 export default defineEventHandler(async (event) => {
   await requireAuth(event)
   const entries = await listPublicIpPoolEntries()

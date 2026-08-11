@@ -1,3 +1,5 @@
+import { ensureStableIpAssignments } from '~/server/utils/db'
+
 export default defineEventHandler(async (event) => {
   await requireAuth(event)
   const changes = await ensureStableIpAssignments()

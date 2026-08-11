@@ -1,3 +1,6 @@
+import { getAppConfig } from '~/server/utils/config'
+import { listManagedApiKeys, apiKeyPrefix } from '~/server/utils/api-keys'
+
 export default defineEventHandler(async (event) => {
   await requireAuth(event)
   const configKeys = getAppConfig().api_keys.map((key, index) => ({

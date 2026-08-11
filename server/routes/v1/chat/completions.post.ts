@@ -1,3 +1,6 @@
+import { requireApiKey } from '~/server/utils/auth'
+import { proxyChatCompletions } from '~/server/utils/proxy'
+
 export default defineEventHandler(async (event) => {
   try {
     const apiKeyInfo = await requireApiKey(event)

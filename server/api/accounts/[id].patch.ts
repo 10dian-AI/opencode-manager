@@ -1,3 +1,6 @@
+import { updateAccountSettings, toPublicAccount } from '~/server/utils/accounts'
+import { validateAuthCookieValue } from '~/server/utils/auth-cookie'
+
 export default defineEventHandler(async (event) => {
   await requireAuth(event)
   const id = Number(getRouterParam(event, 'id'))

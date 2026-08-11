@@ -1,3 +1,6 @@
+import { updateIpPoolEntry, listPublicIpPoolEntries, isUniqueViolation } from '~/server/utils/ip-pool'
+import { ensureStableIpAssignments } from '~/server/utils/db'
+
 export default defineEventHandler(async (event) => {
   await requireAuth(event)
   const id = Number(getRouterParam(event, 'id'))
