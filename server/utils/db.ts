@@ -166,6 +166,12 @@ function buildPool(max = positiveInteger(process.env.POSTGRES_POOL_MAX, 20)): Po
   types.setTypeParser(20, value => Number(value))
 
   const connectionString = process.env.DATABASE_URL
+  if (!connectionString && !process.env.POSTGRES_HOST) {
+    throw new Error(
+      'Database configuration missing: Set DATABASE_URL or POSTGRES_HOST environment variable'
+    )
+  }
+
   const ssl = /^(1|true|require)$/i.test(process.env.DATABASE_SSL || '')
     ? {
         rejectUnauthorized: process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false',
@@ -189,7 +195,9 @@ function buildPool(max = positiveInteger(process.env.POSTGRES_POOL_MAX, 20)): Po
   config.connectionTimeoutMillis = positiveInteger(process.env.POSTGRES_CONNECT_TIMEOUT_MS, 10_000)
 
   const created = new Pool(config)
-  created.on('error', () => {
+  created.on('error', (error) => {
+    // Log idle client errors for monitoring purposes
+    console.error('Database pool idle client error:', error)
     // Idle client failures are recoverable; the pool creates a new connection on demand.
   })
   return created
@@ -344,8 +352,13 @@ export function getDb(): Promise<SqlClient> {
   })()
 
   readyPromise = readyPromise.catch(error => {
+    const currentPromise = readyPromise
     readyPromise = null
     pool = null
+    // Only reset if this is still the current promise to avoid race conditions
+    if (readyPromise === currentPromise) {
+      readyPromise = null
+    }
     throw error
   })
 
@@ -634,9 +647,18 @@ export async function tryAcquireAccountProxySlot(
 ): Promise<(() => Promise<void>) | null> {
   for (let slot = 0; slot < concurrency; slot++) {
     const leaseToken = randomUUID()
+    // Use CTE with SELECT FOR UPDATE to ensure atomic check-and-set
     const acquired = await queryRow<{ lease_token: string }>(`
+      WITH available_slot AS (
+        SELECT account_id, slot
+        FROM account_proxy_slots
+        WHERE account_id = $1 AND slot = $2 AND expires_at <= now()
+        FOR UPDATE SKIP LOCKED
+      )
       INSERT INTO account_proxy_slots (account_id, slot, lease_token, expires_at)
-      VALUES ($1, $2, $3, now() + ($4 || ' milliseconds')::interval)
+      SELECT $1, $2, $3, now() + ($4 || ' milliseconds')::interval
+      WHERE EXISTS (SELECT 1 FROM available_slot)
+         OR NOT EXISTS (SELECT 1 FROM account_proxy_slots WHERE account_id = $1 AND slot = $2)
       ON CONFLICT (account_id, slot) DO UPDATE SET
         lease_token = excluded.lease_token,
         expires_at = excluded.expires_at

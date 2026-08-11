@@ -214,138 +214,128 @@ export async function proxyChatCompletions(
       logData.accountName = account.name || account.email || null
 
       try {
-        try {
-          const fetchImpl = await createAccountFetch(account)
-          const firstTokenStartTime = Date.now()
-          let firstTokenRecorded = false
+        const fetchImpl = await createAccountFetch(account)
+        const firstTokenStartTime = Date.now()
+        let firstTokenRecorded = false
 
-          const response = await fetchImpl(`${GO_BASE}/chat/completions`, {
-            method: 'POST',
-            headers: upstreamHeaders(event, account.upstream_api_key!),
-            body,
-            signal: upstreamSignal
+        const response = await fetchImpl(`${GO_BASE}/chat/completions`, {
+          method: 'POST',
+          headers: upstreamHeaders(event, account.upstream_api_key!),
+          body,
+          signal: upstreamSignal
+        })
+
+        logData.statusCode = response.status
+
+        if (response.status === 401 || response.status === 403) {
+          logData.errorMessage = `Upstream API key rejected (status ${response.status})`
+          await invalidateUpstreamApiKey(
+            account.id,
+            `Upstream API key rejected (status ${response.status}); cached key cleared.`
+          ).catch(() => {})
+        } else if (ACCOUNT_ERROR_STATUSES.has(response.status) || response.status >= 500) {
+          logData.errorMessage = `Upstream error (status ${response.status})`
+          refreshAfterUpstreamError(account.id)
+        }
+
+        // For streaming responses, wrap the body to track tokens
+        if (logData.isStream && response.body && response.ok) {
+          const reader = response.body.getReader()
+          let released = false
+          const decoder = new TextDecoder()
+
+          const finish = () => {
+            if (released) return
+            released = true
+            upstreamSignal?.removeEventListener('abort', abort)
+            void releaseAccountSlot()
+          }
+          const abort = () => {
+            finish()
+            void reader.cancel(upstreamSignal?.reason).catch(() => {})
+          }
+          upstreamSignal?.addEventListener('abort', abort, { once: true })
+          if (upstreamSignal?.aborted) abort()
+
+          const body = new ReadableStream<Uint8Array>({
+            async pull(controller) {
+              try {
+                const chunk = await reader.read()
+                if (chunk.done) {
+                  finish()
+                  controller.close()
+                  // Log the streaming call
+                  void logCallCompletion(apiKeyInfo, logData, callerIp, startTime)
+                } else {
+                  // Record first token time
+                  if (!firstTokenRecorded) {
+                    logData.firstTokenTime = Date.now() - firstTokenStartTime
+                    firstTokenRecorded = true
+                  }
+
+                  // Try to extract token usage from SSE data
+                  const text = decoder.decode(chunk.value, { stream: true })
+                  const lines = text.split('\n')
+                  for (const line of lines) {
+                    if (line.startsWith('data: ') && !line.includes('[DONE]')) {
+                      try {
+                        const data = JSON.parse(line.slice(6))
+                        if (data.usage) {
+                          logData.promptTokens = data.usage.prompt_tokens || null
+                          logData.completionTokens = data.usage.completion_tokens || null
+                          logData.cachedPromptTokens = data.usage.prompt_tokens_details?.cached_tokens || null
+                          logData.createdPromptTokens = data.usage.prompt_tokens_details?.created_tokens || null
+                        }
+                      } catch {}
+                    }
+                  }
+
+                  controller.enqueue(chunk.value)
+                }
+              } catch (error) {
+                finish()
+                controller.error(error)
+                void logCallCompletion(apiKeyInfo, logData, callerIp, startTime)
+              }
+            },
+            async cancel(reason) {
+              finish()
+              await reader.cancel(reason).catch(() => {})
+              void logCallCompletion(apiKeyInfo, logData, callerIp, startTime)
+            }
           })
 
-          logData.statusCode = response.status
-
-          if (response.status === 401 || response.status === 403) {
-            logData.errorMessage = `Upstream API key rejected (status ${response.status})`
-            await invalidateUpstreamApiKey(
-              account.id,
-              `Upstream API key rejected (status ${response.status}); cached key cleared.`
-            ).catch(() => {})
-          } else if (ACCOUNT_ERROR_STATUSES.has(response.status) || response.status >= 500) {
-            logData.errorMessage = `Upstream error (status ${response.status})`
-            refreshAfterUpstreamError(account.id)
-          }
-
-          // For streaming responses, wrap the body to track tokens
-          if (logData.isStream && response.body && response.ok) {
-            const reader = response.body.getReader()
-            let released = false
-            const decoder = new TextDecoder()
-
-            const finish = () => {
-              if (released) return
-              released = true
-              upstreamSignal?.removeEventListener('abort', abort)
-              void releaseAccountSlot()
-            }
-            const abort = () => {
-              finish()
-              void reader.cancel(upstreamSignal?.reason).catch(() => {})
-            }
-            upstreamSignal?.addEventListener('abort', abort, { once: true })
-            if (upstreamSignal?.aborted) abort()
-
-            const body = new ReadableStream<Uint8Array>({
-              async pull(controller) {
-                try {
-                  const chunk = await reader.read()
-                  if (chunk.done) {
-                    finish()
-                    controller.close()
-                    // Log the streaming call
-                    await logCallCompletion(apiKeyInfo, logData, callerIp, startTime)
-                  } else {
-                    // Record first token time
-                    if (!firstTokenRecorded) {
-                      logData.firstTokenTime = Date.now() - firstTokenStartTime
-                      firstTokenRecorded = true
-                    }
-
-                    // Try to extract token usage from SSE data
-                    const text = decoder.decode(chunk.value, { stream: true })
-                    const lines = text.split('\n')
-                    for (const line of lines) {
-                      if (line.startsWith('data: ') && !line.includes('[DONE]')) {
-                        try {
-                          const data = JSON.parse(line.slice(6))
-                          if (data.usage) {
-                            logData.promptTokens = data.usage.prompt_tokens || null
-                            logData.completionTokens = data.usage.completion_tokens || null
-                            logData.cachedPromptTokens = data.usage.prompt_tokens_details?.cached_tokens || null
-                            logData.createdPromptTokens = data.usage.prompt_tokens_details?.created_tokens || null
-                          }
-                        } catch {}
-                      }
-                    }
-
-                    controller.enqueue(chunk.value)
-                  }
-                } catch (error) {
-                  finish()
-                  controller.error(error)
-                  await logCallCompletion(apiKeyInfo, logData, callerIp, startTime)
-                }
-              },
-              async cancel(reason) {
-                finish()
-                await reader.cancel(reason).catch(() => {})
-                await logCallCompletion(apiKeyInfo, logData, callerIp, startTime)
+          return new Response(body, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: response.headers
+          })
+        } else {
+          // For non-streaming responses, extract usage from response body
+          if (response.ok && !logData.isStream) {
+            const clonedResponse = response.clone()
+            try {
+              const data = await clonedResponse.json()
+              if (data.usage) {
+                logData.promptTokens = data.usage.prompt_tokens || null
+                logData.completionTokens = data.usage.completion_tokens || null
+                logData.cachedPromptTokens = data.usage.prompt_tokens_details?.cached_tokens || null
+                logData.createdPromptTokens = data.usage.prompt_tokens_details?.created_tokens || null
               }
-            })
-
-            return new Response(body, {
-              status: response.status,
-              statusText: response.statusText,
-              headers: response.headers
-            })
-          } else {
-            // For non-streaming responses, extract usage from response body
-            if (response.ok && !logData.isStream) {
-              const clonedResponse = response.clone()
-              try {
-                const data = await clonedResponse.json()
-                if (data.usage) {
-                  logData.promptTokens = data.usage.prompt_tokens || null
-                  logData.completionTokens = data.usage.completion_tokens || null
-                  logData.cachedPromptTokens = data.usage.prompt_tokens_details?.cached_tokens || null
-                  logData.createdPromptTokens = data.usage.prompt_tokens_details?.created_tokens || null
-                }
-                logData.firstTokenTime = Date.now() - firstTokenStartTime
-              } catch {}
-            }
-
-            const result = responseHoldingAccountSlot(response, releaseAccountSlot, upstreamSignal)
-            await logCallCompletion(apiKeyInfo, logData, callerIp, startTime)
-            return result
+              logData.firstTokenTime = Date.now() - firstTokenStartTime
+            } catch {}
           }
-        } catch (error) {
-          await releaseAccountSlot()
-          throw error
+
+          const result = responseHoldingAccountSlot(response, releaseAccountSlot, upstreamSignal)
+          void logCallCompletion(apiKeyInfo, logData, callerIp, startTime)
+          return result
         }
-      } catch {
-        if (requestLifecycle.signal.aborted) throw new ProxyRequestAbortedError()
-        if (upstreamTimeoutSignal.aborted) {
-          logData.statusCode = 504
-          logData.errorMessage = '上游请求超时'
-          return jsonError(504, '上游请求超时', 'upstream_timeout')
-        }
-        refreshAfterUpstreamError(account.id)
-        logData.statusCode = 502
-        logData.errorMessage = '上游请求失败'
-        return jsonError(502, '上游请求失败', 'upstream_error')
+      } catch (error) {
+        await releaseAccountSlot()
+        throw error
+      } finally {
+        // Ensure slot is always released in case of unexpected errors
+        await releaseAccountSlot().catch(() => {})
       }
     }, {
       signal: upstreamSignal,

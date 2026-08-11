@@ -382,10 +382,16 @@ function refreshRouteModuleCache(
 
   let refresh!: Promise<boolean>
   refresh = (async () => {
-    const modules = await fetchOpenCodeRouteModules(cache.assets, fetchImpl)
-    if (!modules.some(Boolean)) return false
-    cache.modules = modules
-    return true
+    try {
+      const modules = await fetchOpenCodeRouteModules(cache.assets, fetchImpl)
+      if (!modules.some(Boolean)) return false
+      cache.modules = modules
+      return true
+    } catch (error) {
+      // On failure, clear modules to force retry on next request
+      cache.modules = []
+      throw error
+    }
   })().finally(() => {
     if (cache.refreshing === refresh) cache.refreshing = null
   })

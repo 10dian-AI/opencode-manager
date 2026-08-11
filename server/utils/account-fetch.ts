@@ -71,7 +71,12 @@ function buildProxyTransport(proxyUrl: string) {
 function fetchThroughProxy(proxyId: number, proxyUrl: string): typeof fetch {
   let transport = proxyTransports.get(proxyId)
   if (!transport || transport.proxyUrl !== proxyUrl) {
-    if (transport) void Promise.resolve(transport.close()).catch(() => {})
+    if (transport) {
+      // Properly await close to ensure cleanup
+      Promise.resolve(transport.close()).catch((error) => {
+        console.error(`Failed to close proxy transport ${proxyId}:`, error)
+      })
+    }
     transport = buildProxyTransport(proxyUrl)
     proxyTransports.set(proxyId, transport)
   }
@@ -88,7 +93,10 @@ export async function createAccountFetch(
   if (account.ip_pool_id === null) return fetch
   const entry = await getIpPoolEntry(account.ip_pool_id)
   if (!entry || !entry.enabled) {
-    throw new Error('The account has no available outbound proxy')
+    throw createError({
+      statusCode: 500,
+      statusMessage: 'The account has no available outbound proxy'
+    })
   }
   return fetchThroughProxy(entry.id, entry.proxy_url)
 }

@@ -26,12 +26,12 @@ export async function logoutToken(token: string) {
 
 export async function requireAuth(
   event: { node: { req: { headers: { cookie?: string } } } }
-) {
+): Promise<string> {
   const cookieHeader = event.node.req.headers.cookie || ''
   const match = cookieHeader.match(new RegExp(`(?:^|;\\s*)${COOKIE_NAME}=([^;]+)`))
   const token = match?.[1]
 
-  if (!token || !await findSession(token)) {
+  if (!token || !(await findSession(token))) {
     throw createError({ statusCode: 401, statusMessage: 'Unauthorized' })
   }
 

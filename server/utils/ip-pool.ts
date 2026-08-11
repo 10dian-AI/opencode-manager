@@ -24,7 +24,9 @@ export interface IpAssignmentChange {
 }
 
 export function normalizeProxyUrl(input: unknown) {
-  if (typeof input !== 'string' || !input.trim()) throw new Error('Proxy URL is required')
+  if (typeof input !== 'string' || !input.trim()) {
+    throw createError({ statusCode: 400, statusMessage: 'Proxy URL is required' })
+  }
   let value = input.trim()
   if (/^sk5:\/\//i.test(value)) value = value.replace(/^sk5:/i, 'socks5:')
 
@@ -42,12 +44,17 @@ export function normalizeProxyUrl(input: unknown) {
   try {
     url = new URL(value)
   } catch {
-    throw new Error('Invalid proxy URL')
+    throw createError({ statusCode: 400, statusMessage: 'Invalid proxy URL' })
   }
   if (!['http:', 'https:', 'socks5:', 'socks5h:'].includes(url.protocol)) {
-    throw new Error('Only HTTP, HTTPS and SOCKS5 proxies are supported')
+    throw createError({
+      statusCode: 400,
+      statusMessage: 'Only HTTP, HTTPS and SOCKS5 proxies are supported'
+    })
   }
-  if (!url.hostname || !url.port) throw new Error('Proxy host and port are required')
+  if (!url.hostname || !url.port) {
+    throw createError({ statusCode: 400, statusMessage: 'Proxy host and port are required' })
+  }
   url.pathname = ''
   url.search = ''
   url.hash = ''

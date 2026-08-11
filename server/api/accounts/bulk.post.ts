@@ -6,7 +6,8 @@ export default defineEventHandler(async (event) => {
   const body = await readBody<{ ids?: unknown; action?: unknown }>(event)
   const ids = parseAccountIds(body?.ids)
   const action = parseBulkAction(body?.action)
-  const byId = new Map((await getAccountsByIds(ids)).map(account => [account.id, account]))
+  const fetchedAccounts = await getAccountsByIds(ids)
+  const byId = new Map(fetchedAccounts.map(account => [account.id, account]))
   const accounts = ids.map(id => byId.get(id))
   const missingIds = ids.filter((_, index) => !accounts[index])
   if (missingIds.length) {

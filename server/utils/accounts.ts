@@ -344,7 +344,15 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
         break
       }
 
+      // Safety check: ensure we're making progress
+      const previousSize = attemptedRewards.size
       attemptedRewards.add(referralId)
+      if (attemptedRewards.size === previousSize) {
+        // This should never happen, but guards against infinite loop if Set logic fails
+        referralError = 'Referral reward loop detected - aborting'
+        break
+      }
+
       options.progress?.update(
         'referral',
         `正在使用推广额度（${attemptedRewards.size}/20）`
@@ -497,18 +505,26 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
     const cookieExpired = err instanceof AuthCookieExpiredError
     const preserveDisabled = currentAccount.status === 'disabled' &&
       isProtectedAccountDisabledReason(currentAccount.disabled_reason)
-    const failedAccount = (await updateAccount(id, {
-      status: preserveDisabled || cookieExpired ? 'disabled' : 'error',
-      disabled_reason: preserveDisabled
-        ? currentAccount.disabled_reason
-        : cookieExpired
-          ? 'auth_expired'
-          : currentAccount.disabled_reason,
-      last_error: currentAccount.disabled_reason === RISK_CONTROL_DISABLED_REASON
-        ? currentAccount.last_error || message
-        : message,
-      last_synced_at: new Date().toISOString()
-    }))!
+
+    let failedAccount: Account
+    try {
+      failedAccount = (await updateAccount(id, {
+        status: preserveDisabled || cookieExpired ? 'disabled' : 'error',
+        disabled_reason: preserveDisabled
+          ? currentAccount.disabled_reason
+          : cookieExpired
+            ? 'auth_expired'
+            : currentAccount.disabled_reason,
+        last_error: currentAccount.disabled_reason === RISK_CONTROL_DISABLED_REASON
+          ? currentAccount.last_error || message
+          : message,
+        last_synced_at: new Date().toISOString()
+      }))!
+    } catch (updateError) {
+      // If account update fails, log but re-throw original error
+      console.error('Failed to update account error state:', updateError)
+      throw err
+    }
     if (options.throwOnError) throw err
     return failedAccount
   }
@@ -519,8 +535,17 @@ export async function refreshAllAccounts() {
   return mapConcurrent(accounts, REFRESH_CONCURRENCY, account => refreshAccount(account.id))
 }
 
-export function refreshAccountsByIds(ids: number[]) {
-  return mapConcurrent(ids, REFRESH_CONCURRENCY, refreshAccount)
+export async function refreshAccountsByIds(ids: number[]) {
+  return mapConcurrent(ids, REFRESH_CONCURRENCY, async (id) => {
+    try {
+      return await refreshAccount(id)
+    } catch (error) {
+      console.error(`Failed to refresh account ${id}:`, error)
+      const account = await getAccount(id)
+      if (account) return account
+      throw error
+    }
+  })
 }
 
 export interface RiskControlCheckResult {
