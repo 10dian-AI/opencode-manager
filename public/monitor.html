@@ -228,7 +228,7 @@
   </div>
 
   <script>
-    const API_BASE = ''
+    const API_BASE = window.location.protocol + '//' + window.location.hostname + (window.location.port === '3031' ? ':3031' : (':' + window.location.port))
 
     async function fetchStats() {
       try {

@@ -264,8 +264,9 @@ export async function enableAccountChineseModels(id: number): Promise<Account> {
       }
     })
     if (!response.ok) throw new Error(`获取 workspace 页面失败（${response.status}）`)
-    const serverId = await discoverChineseModelsServerId(await response.text(), fetchImpl)
-    if (!serverId) throw new Error('无法识别开启中国模型所需的服务操作')
+    const html = await response.text()
+    const serverId = discoverChineseModelsServerId(html)
+    if (!serverId) throw new Error('无法在 workspace 页面找到开启中国模型的设置项，请确认账号已订阅 OpenCode Go')
 
     await enableOpenCodeChineseModels(account.auth_cookie, workspaceId, serverId, fetchImpl)
     return (await updateAccount(id, {

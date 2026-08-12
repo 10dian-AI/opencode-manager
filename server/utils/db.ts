@@ -593,13 +593,18 @@ export async function deleteNonMemberAccounts() {
 }
 
 export async function getProxyCandidates(): Promise<Account[]> {
+  // Order by subscription_ends_at ASC so accounts expiring soonest are
+  // preferred; accounts with no known end date come last.
   return queryRows<Account>(`
     SELECT * FROM accounts
     WHERE status = 'active'
       AND subscription_status = 'active'
       AND upstream_api_key IS NOT NULL
       AND upstream_api_key <> ''
-    ORDER BY id ASC
+    ORDER BY
+      CASE WHEN subscription_ends_at IS NULL THEN 1 ELSE 0 END ASC,
+      subscription_ends_at ASC,
+      id ASC
   `)
 }
 

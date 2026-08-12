@@ -116,13 +116,14 @@ export interface RiskControlCheckResult {
   message: string | null
 }
 
-export type BulkAccountAction = 'refresh' | 'risk-control-check' | 'enable' | 'disable'
+export type BulkAccountAction = 'refresh' | 'risk-control-check' | 'enable' | 'disable' | 'enable-chinese-models'
 
 export interface BulkAccountActionResult {
   action: BulkAccountAction
   processed: number
   skipped: number
   blocked: number
+  failed?: number
   accounts: Account[]
 }
 
@@ -453,6 +454,15 @@ export function useAccounts() {
         })
         updatedAccounts.push(updated)
         applyAccount(updated)
+        return
+      }
+      if (action === 'enable-chinese-models') {
+        const result = await requestFetch<{ success: boolean; account: Account }>(
+          '/api/accounts/enable-chinese-models',
+          { method: 'POST', body: { account_id: account.id } }
+        )
+        updatedAccounts.push(result.account)
+        applyAccount(result.account)
         return
       }
       if (action === 'enable') {

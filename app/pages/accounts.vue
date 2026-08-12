@@ -59,6 +59,7 @@ const confirmCancellation = ref(false)
 const actionId = ref<number | null>(null)
 const refreshingAll = ref(false)
 const checkingAllRiskControls = ref(false)
+const enablingAllChinese = ref(false)
 const membershipFilter = ref<'all' | 'member' | 'non-member'>('all')
 const riskControlFilter = ref<'all' | 'risk-controlled' | 'not-risk-controlled'>('all')
 const selectedAccountIds = ref<number[]>([])
@@ -569,6 +570,41 @@ async function onCheckAllRiskControls() {
   }
 }
 
+async function onEnableAllChinese() {
+  enablingAllChinese.value = true
+  try {
+    const ids = accounts.value
+      .filter(account =>
+        account.status === 'active' &&
+        account.subscription_status === 'active' &&
+        account.disabled_reason !== 'manual' &&
+        !account.chinese_models_enabled_at
+      )
+      .map(account => account.id)
+    if (!ids.length) {
+      toast.add({ title: '没有需要开启中国模型的账号', color: 'neutral' })
+      return
+    }
+    const result = await runAccountBatch(
+      ids,
+      'enable-chinese-models',
+      progress => {
+        batchProgress.value = { label: '批量开启中国模型', ...progress }
+      }
+    )
+    toast.add({
+      title: `已成功开启 ${result.succeeded} 个账号的中国模型`,
+      description: result.failed ? `${result.failed} 个账号开启失败` : undefined,
+      color: result.failed ? 'warning' : 'success'
+    })
+  } catch (e: any) {
+    toast.add({ title: e?.data?.statusMessage || e?.message || '批量开启失败', color: 'error' })
+  } finally {
+    enablingAllChinese.value = false
+    batchProgress.value = null
+  }
+}
+
 function onDeleteNonMembers() {
   if (!nonMemberCount.value) return
   deleteIntent.value = { kind: 'non-members', count: nonMemberCount.value }
@@ -594,7 +630,8 @@ async function executeBulkAction(action: AccountBatchAction, ids: number[]) {
       'risk-control-check': '风控检测',
       enable: '启用',
       disable: '禁用',
-      delete: '删除'
+      delete: '删除',
+      'enable-chinese-models': '开启中国模型'
     }
     const result = await runAccountBatch(
       ids,
@@ -749,6 +786,16 @@ async function exportKeys() {
           @click="onCheckAllRiskControls"
         >
           风控检测
+        </UButton>
+        <UButton
+          icon="i-lucide-globe"
+          color="neutral"
+          variant="outline"
+          :loading="enablingAllChinese"
+          :disabled="Boolean(batchProgress)"
+          @click="onEnableAllChinese"
+        >
+          批量开启中国模型
         </UButton>
         <UButton
           icon="i-lucide-refresh-cw"
@@ -989,8 +1036,13 @@ async function exportKeys() {
                   <UBadge v-if="account.subscription_cancelled_at" color="neutral" variant="subtle" size="sm">
                     已取消续费
                   </UBadge>
-                  <UBadge v-if="account.chinese_models_enabled_at" color="info" variant="subtle" size="sm">
-                    中国模型已开启
+                  <UBadge
+                    v-if="account.subscription_status === 'active'"
+                    :color="account.chinese_models_enabled_at ? 'info' : 'neutral'"
+                    variant="subtle"
+                    size="sm"
+                  >
+                    {{ account.chinese_models_enabled_at ? '已启用部署在中国的模型' : '未启用部署在中国的模型' }}
                   </UBadge>
                 </div>
                 <div v-if="account.subscription_ends_at" class="mt-1 text-xs text-muted">

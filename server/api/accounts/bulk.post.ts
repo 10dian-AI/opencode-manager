@@ -1,4 +1,7 @@
-type BulkAccountAction = 'refresh' | 'risk-control-check' | 'enable' | 'disable'
+import { enableAccountChineseModels } from '../../utils/accounts'
+import type { Account } from '../../utils/db'
+
+type BulkAccountAction = 'refresh' | 'risk-control-check' | 'enable' | 'disable' | 'enable-chinese-models'
 
 export default defineEventHandler(async (event) => {
   await requireAuth(event)
@@ -61,6 +64,26 @@ export default defineEventHandler(async (event) => {
       accounts: updated.map(toPublicAccount)
     }
   }
+
+  if (action === 'enable-chinese-models') {
+    const results = await Promise.allSettled(
+      ids.map(id => enableAccountChineseModels(id))
+    )
+    const succeeded = results.filter(r => r.status === 'fulfilled').length
+    const failed = results.filter(r => r.status === 'rejected').length
+    const updatedAccounts = results
+      .filter((r): r is PromiseFulfilledResult<Account> => r.status === 'fulfilled')
+      .map(r => toPublicAccount(r.value))
+    return {
+      action,
+      processed: succeeded,
+      skipped: 0,
+      blocked: 0,
+      failed,
+      accounts: updatedAccounts
+    }
+  }
+
   const updated = await refreshAccountsByIds(ids)
   return {
     action,
@@ -86,7 +109,8 @@ function parseBulkAction(value: unknown): BulkAccountAction {
     value !== 'refresh' &&
     value !== 'risk-control-check' &&
     value !== 'enable' &&
-    value !== 'disable'
+    value !== 'disable' &&
+    value !== 'enable-chinese-models'
   ) {
     throw createError({ statusCode: 400, statusMessage: 'Invalid bulk action' })
   }
