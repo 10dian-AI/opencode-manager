@@ -10,6 +10,7 @@ RUN BUN_FEATURE_FLAG_DISABLE_NATIVE_DEPENDENCY_LINKER=1 \
 COPY app ./app
 COPY public ./public
 COPY server ./server
+COPY monitor-server.mjs ./monitor-server.mjs
 
 RUN bun run build
 
@@ -34,8 +35,10 @@ WORKDIR /app
 
 COPY --from=runtime-deps --chown=bun:bun /runtime-deps/node_modules ./node_modules
 COPY --from=builder --chown=bun:bun /app/.output ./.output
+COPY --from=builder --chown=bun:bun /app/monitor-server.mjs ./monitor-server.mjs
+COPY --from=builder --chown=bun:bun /app/public ./public
 
 USER bun
-EXPOSE 3000
+EXPOSE 3000 3031
 
 CMD ["bun", ".output/server/index.mjs"]

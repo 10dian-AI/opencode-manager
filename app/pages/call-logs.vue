@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { TableColumn } from '@nuxt/ui'
 import type { CallLog } from '~~/server/utils/call-logs'
 
 const toast = useToast()
@@ -6,9 +7,8 @@ const loading = ref(false)
 const logs = ref<CallLog[]>([])
 const total = ref(0)
 const page = ref(1)
-const pageSize = ref(50)
+const pageSize = 50
 
-// Search filters
 const filters = ref({
   apiKeyId: '',
   accountId: '',
@@ -21,21 +21,32 @@ const filters = ref({
   endTime: ''
 })
 
-const columns = [
-  { key: 'timestamp', label: '时间' },
-  { key: 'api_key_prefix', label: 'API Key' },
-  { key: 'model_name', label: '模型' },
-  { key: 'account_name', label: '账号' },
-  { key: 'is_stream', label: '类型' },
-  { key: 'tokens', label: 'Tokens' },
-  { key: 'throughput', label: '吞吐速度' },
-  { key: 'timing', label: '响应时间' },
-  { key: 'caller_ip', label: '调用IP' },
-  { key: 'status_code', label: '状态' },
-  { key: 'actions', label: '操作' }
+const columns: TableColumn<CallLog>[] = [
+  { accessorKey: 'timestamp', header: '时间' },
+  { accessorKey: 'api_key_prefix', header: 'API Key' },
+  { accessorKey: 'model_name', header: '模型' },
+  { accessorKey: 'account_name', header: '账号' },
+  { accessorKey: 'is_stream', header: '类型' },
+  { id: 'tokens', header: 'Tokens' },
+  { accessorKey: 'throughput', header: '吞吐速度' },
+  { id: 'timing', header: '响应时间' },
+  { accessorKey: 'caller_ip', header: '调用 IP' },
+  { accessorKey: 'status_code', header: '状态' },
+  { id: 'actions', header: '详情' }
 ]
 
-const statusColorMap: Record<number, string> = {
+const streamItems = [
+  { label: '全部', value: '' },
+  { label: '流式', value: 'true' },
+  { label: '非流式', value: 'false' }
+]
+const errorItems = [
+  { label: '全部', value: '' },
+  { label: '仅错误', value: 'true' },
+  { label: '仅正常', value: 'false' }
+]
+
+const statusColorMap: Record<number, 'success' | 'warning' | 'error' | 'neutral'> = {
   200: 'success',
   400: 'warning',
   401: 'error',
@@ -48,96 +59,90 @@ const statusColorMap: Record<number, string> = {
   504: 'error'
 }
 
+let requestController: AbortController | null = null
 async function fetchLogs() {
+  requestController?.abort()
+  requestController = new AbortController()
   loading.value = true
   try {
-    const query: any = {
-      limit: pageSize.value,
-      offset: (page.value - 1) * pageSize.value
+    const query: Record<string, string | number> = {
+      limit: pageSize,
+      offset: (page.value - 1) * pageSize
     }
-
-    if (filters.value.apiKeyId) query.apiKeyId = filters.value.apiKeyId
-    if (filters.value.accountId) query.accountId = filters.value.accountId
-    if (filters.value.modelName) query.modelName = filters.value.modelName
-    if (filters.value.callerIp) query.callerIp = filters.value.callerIp
-    if (filters.value.statusCode) query.statusCode = filters.value.statusCode
-    if (filters.value.isStream) query.isStream = filters.value.isStream
-    if (filters.value.hasError) query.hasError = filters.value.hasError
-    if (filters.value.startTime) query.startTime = filters.value.startTime
-    if (filters.value.endTime) query.endTime = filters.value.endTime
-
-    const response = await $fetch<{ logs: CallLog[]; total: number }>('/api/call-logs', { query })
+    for (const [key, value] of Object.entries(filters.value)) {
+      if (value) query[key] = value
+    }
+    const response = await $fetch<{ logs: CallLog[]; total: number }>('/api/call-logs', {
+      query,
+      signal: requestController.signal
+    })
     logs.value = response.logs
     total.value = response.total
-  } catch (e: any) {
-    toast.add({ title: e?.data?.statusMessage || '获取日志失败', color: 'error' })
+  } catch (error: any) {
+    if (error?.name !== 'AbortError') {
+      toast.add({
+        title: error?.data?.statusMessage || '获取日志失败',
+        description: error?.message,
+        color: 'error'
+      })
+    }
   } finally {
     loading.value = false
   }
 }
 
+function runSearch() {
+  if (page.value !== 1) page.value = 1
+  else void fetchLogs()
+}
+
 function resetFilters() {
   filters.value = {
-    apiKeyId: '',
-    accountId: '',
-    modelName: '',
-    callerIp: '',
-    statusCode: '',
-    isStream: '',
-    hasError: '',
-    startTime: '',
-    endTime: ''
+    apiKeyId: '', accountId: '', modelName: '', callerIp: '', statusCode: '',
+    isStream: '', hasError: '', startTime: '', endTime: ''
   }
-  page.value = 1
-  fetchLogs()
+  runSearch()
 }
 
 function formatTimestamp(timestamp: string) {
-  return new Date(timestamp).toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
-  })
+  return new Date(timestamp).toLocaleString('zh-CN', { hour12: false })
 }
 
 function formatTokens(log: CallLog) {
   const parts: string[] = []
-  if (log.prompt_tokens !== null) parts.push(`输入: ${log.prompt_tokens}`)
-  if (log.completion_tokens !== null) parts.push(`输出: ${log.completion_tokens}`)
-  if (log.cached_prompt_tokens !== null) parts.push(`缓存: ${log.cached_prompt_tokens}`)
-  if (log.created_prompt_tokens !== null) parts.push(`创建: ${log.created_prompt_tokens}`)
-  return parts.length ? parts.join(' / ') : '-'
+  if (log.prompt_tokens !== null) parts.push(`输入 ${log.prompt_tokens}`)
+  if (log.completion_tokens !== null) parts.push(`输出 ${log.completion_tokens}`)
+  if (log.cached_prompt_tokens !== null) parts.push(`缓存 ${log.cached_prompt_tokens}`)
+  if (log.created_prompt_tokens !== null) parts.push(`创建 ${log.created_prompt_tokens}`)
+  return parts.length ? parts.join(' · ') : '-'
 }
 
 function formatThroughput(throughput: number | null) {
-  return throughput !== null ? `${throughput.toFixed(2)} tokens/s` : '-'
+  return throughput !== null && Number.isFinite(throughput)
+    ? `${throughput.toFixed(2)} tokens/s`
+    : '-'
 }
 
 function formatTiming(log: CallLog) {
   const parts: string[] = []
-  if (log.first_token_time_ms !== null) parts.push(`首字: ${log.first_token_time_ms}ms`)
-  if (log.response_time_ms !== null) parts.push(`总计: ${log.response_time_ms}ms`)
-  return parts.length ? parts.join(' / ') : '-'
+  if (log.first_token_time_ms !== null) parts.push(`首字 ${log.first_token_time_ms}ms`)
+  if (log.response_time_ms !== null) parts.push(`总计 ${log.response_time_ms}ms`)
+  return parts.length ? parts.join(' · ') : '-'
 }
 
-function getStatusColor(statusCode: number | null): string {
-  if (statusCode === null) return 'neutral'
-  return statusColorMap[statusCode] || 'neutral'
+function getStatusColor(statusCode: number | null) {
+  return statusCode === null ? 'neutral' : (statusColorMap[statusCode] || 'neutral')
 }
 
 const selectedLog = ref<CallLog | null>(null)
 const errorDialogOpen = ref(false)
-
-function showErrorDetail(log: CallLog) {
+function showDetail(log: CallLog) {
   selectedLog.value = log
   errorDialogOpen.value = true
 }
 
-await fetchLogs()
-
+onMounted(fetchLogs)
+onBeforeUnmount(() => requestController?.abort())
 watch(page, fetchLogs)
 </script>
 
@@ -146,195 +151,82 @@ watch(page, fetchLogs)
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
         <h1 class="ocm-title text-2xl font-semibold">调用日志</h1>
-        <p class="text-sm text-muted">查看所有模型调用记录</p>
+        <p class="text-sm text-muted">完整查看模型、账号、Tokens、耗时与错误信息</p>
       </div>
-      <div class="flex gap-2">
-        <UButton
-          icon="i-lucide-refresh-cw"
-          color="neutral"
-          variant="outline"
-          :loading="loading"
-          @click="fetchLogs"
-        >
-          刷新
-        </UButton>
-      </div>
+      <UButton icon="i-lucide-refresh-cw" color="neutral" variant="outline" :loading="loading" @click="fetchLogs">
+        刷新
+      </UButton>
     </div>
 
     <UCard class="ocm-card">
       <template #header>
         <div class="space-y-4">
-          <h2 class="font-medium text-highlighted">搜索过滤</h2>
           <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <UFormField label="API Key ID">
-              <UInput v-model="filters.apiKeyId" placeholder="输入 Key ID" />
-            </UFormField>
-            <UFormField label="账号 ID">
-              <UInput v-model="filters.accountId" placeholder="输入账号 ID" />
-            </UFormField>
-            <UFormField label="模型名称">
-              <UInput v-model="filters.modelName" placeholder="搜索模型" />
-            </UFormField>
-            <UFormField label="调用者 IP">
-              <UInput v-model="filters.callerIp" placeholder="搜索 IP" />
-            </UFormField>
-            <UFormField label="状态码">
-              <UInput v-model="filters.statusCode" placeholder="如: 200, 500" />
-            </UFormField>
-            <UFormField label="流式/非流式">
-              <USelect
-                v-model="filters.isStream"
-                :options="[
-                  { label: '全部', value: '' },
-                  { label: '流式', value: 'true' },
-                  { label: '非流式', value: 'false' }
-                ]"
-              />
-            </UFormField>
-            <UFormField label="是否有错误">
-              <USelect
-                v-model="filters.hasError"
-                :options="[
-                  { label: '全部', value: '' },
-                  { label: '仅错误', value: 'true' },
-                  { label: '仅正常', value: 'false' }
-                ]"
-              />
-            </UFormField>
-            <UFormField label="时间范围">
-              <div class="flex gap-2">
-                <UInput v-model="filters.startTime" type="datetime-local" size="sm" />
-                <UInput v-model="filters.endTime" type="datetime-local" size="sm" />
-              </div>
-            </UFormField>
+            <UFormField label="API Key ID"><UInput v-model="filters.apiKeyId" placeholder="输入 Key ID" /></UFormField>
+            <UFormField label="账号 ID"><UInput v-model="filters.accountId" placeholder="输入账号 ID" /></UFormField>
+            <UFormField label="模型名称"><UInput v-model="filters.modelName" placeholder="搜索模型" /></UFormField>
+            <UFormField label="调用者 IP"><UInput v-model="filters.callerIp" placeholder="搜索 IP" /></UFormField>
+            <UFormField label="状态码"><UInput v-model="filters.statusCode" placeholder="如 200、500" /></UFormField>
+            <UFormField label="响应类型"><USelect v-model="filters.isStream" :items="streamItems" class="w-full" /></UFormField>
+            <UFormField label="调用结果"><USelect v-model="filters.hasError" :items="errorItems" class="w-full" /></UFormField>
+            <UFormField label="开始时间"><UInput v-model="filters.startTime" type="datetime-local" class="w-full" /></UFormField>
+            <UFormField label="结束时间"><UInput v-model="filters.endTime" type="datetime-local" class="w-full" /></UFormField>
           </div>
           <div class="flex gap-2">
-            <UButton @click="fetchLogs" color="primary" :loading="loading">
-              搜索
-            </UButton>
-            <UButton @click="resetFilters" variant="outline" color="neutral">
-              重置
-            </UButton>
+            <UButton icon="i-lucide-search" @click="runSearch">搜索</UButton>
+            <UButton variant="outline" color="neutral" @click="resetFilters">重置</UButton>
           </div>
         </div>
       </template>
 
-      <div v-if="loading" class="py-10 text-center">
-        <UIcon name="i-lucide-loader-circle" class="mx-auto size-8 animate-spin text-primary" />
-        <p class="mt-3 text-sm text-muted">加载中...</p>
-      </div>
+      <UTable
+        :data="logs"
+        :columns="columns"
+        :loading="loading"
+        :watch-options="{ deep: false }"
+        empty="暂无符合条件的调用日志"
+        class="max-h-[64vh] min-w-full"
+        sticky="header"
+      >
+        <template #timestamp-cell="{ row }"><span class="whitespace-nowrap text-xs">{{ formatTimestamp(row.original.timestamp) }}</span></template>
+        <template #api_key_prefix-cell="{ row }"><span class="whitespace-nowrap font-mono text-xs">{{ row.original.api_key_prefix || '-' }}</span></template>
+        <template #model_name-cell="{ row }"><span class="block max-w-48 truncate text-sm" :title="row.original.model_name || ''">{{ row.original.model_name || '-' }}</span></template>
+        <template #account_name-cell="{ row }">
+          <div class="min-w-32 text-sm"><div class="truncate">{{ row.original.account_name || `#${row.original.account_id || '-'}` }}</div><div class="text-xs text-muted">ID: {{ row.original.account_id || '-' }}</div></div>
+        </template>
+        <template #is_stream-cell="{ row }"><UBadge :color="row.original.is_stream ? 'info' : 'neutral'" variant="subtle" size="sm">{{ row.original.is_stream ? '流式' : '非流式' }}</UBadge></template>
+        <template #tokens-cell="{ row }"><span class="block min-w-36 whitespace-normal text-xs leading-5">{{ formatTokens(row.original) }}</span></template>
+        <template #throughput-cell="{ row }"><span class="whitespace-nowrap text-xs">{{ formatThroughput(row.original.throughput) }}</span></template>
+        <template #timing-cell="{ row }"><span class="block min-w-28 whitespace-normal text-xs leading-5">{{ formatTiming(row.original) }}</span></template>
+        <template #caller_ip-cell="{ row }"><span class="whitespace-nowrap font-mono text-xs">{{ row.original.caller_ip || '-' }}</span></template>
+        <template #status_code-cell="{ row }"><UBadge :color="getStatusColor(row.original.status_code)" variant="subtle" size="sm">{{ row.original.status_code ?? '-' }}</UBadge></template>
+        <template #actions-cell="{ row }"><UButton icon="i-lucide-file-search" color="neutral" variant="ghost" size="xs" @click="showDetail(row.original)">查看</UButton></template>
+      </UTable>
 
-      <div v-else-if="!logs.length" class="py-10 text-center text-muted">
-        暂无调用日志
-      </div>
-
-      <div v-else class="overflow-x-auto">
-        <UTable :columns="columns" :rows="logs" class="min-w-full">
-          <template #timestamp-data="{ row }">
-            <span class="text-sm">{{ formatTimestamp(row.timestamp) }}</span>
-          </template>
-
-          <template #api_key_prefix-data="{ row }">
-            <span class="font-mono text-xs">{{ row.api_key_prefix || '-' }}</span>
-          </template>
-
-          <template #model_name-data="{ row }">
-            <span class="text-sm">{{ row.model_name || '-' }}</span>
-          </template>
-
-          <template #account_name-data="{ row }">
-            <div class="text-sm">
-              <div>{{ row.account_name || `#${row.account_id}` }}</div>
-              <div class="text-xs text-muted">ID: {{ row.account_id || '-' }}</div>
-            </div>
-          </template>
-
-          <template #is_stream-data="{ row }">
-            <UBadge :color="row.is_stream ? 'info' : 'neutral'" variant="subtle" size="sm">
-              {{ row.is_stream ? '流式' : '非流式' }}
-            </UBadge>
-          </template>
-
-          <template #tokens-data="{ row }">
-            <span class="text-xs">{{ formatTokens(row) }}</span>
-          </template>
-
-          <template #throughput-data="{ row }">
-            <span class="text-xs">{{ formatThroughput(row.throughput) }}</span>
-          </template>
-
-          <template #timing-data="{ row }">
-            <span class="text-xs">{{ formatTiming(row) }}</span>
-          </template>
-
-          <template #caller_ip-data="{ row }">
-            <span class="font-mono text-xs">{{ row.caller_ip || '-' }}</span>
-          </template>
-
-          <template #status_code-data="{ row }">
-            <UBadge :color="getStatusColor(row.status_code)" variant="subtle" size="sm">
-              {{ row.status_code || '-' }}
-            </UBadge>
-          </template>
-
-          <template #actions-data="{ row }">
-            <UButton
-              v-if="row.error_message"
-              @click="showErrorDetail(row)"
-              icon="i-lucide-alert-circle"
-              color="error"
-              variant="ghost"
-              size="xs"
-            >
-              查看错误
-            </UButton>
-          </template>
-        </UTable>
-
-        <div class="mt-4 flex items-center justify-between">
-          <div class="text-sm text-muted">
-            共 {{ total }} 条记录，当前第 {{ page }} 页
-          </div>
-          <UPagination
-            v-model="page"
-            :total="total"
-            :page-size="pageSize"
-          />
-        </div>
+      <div class="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-default pt-4">
+        <p class="text-sm text-muted">共 {{ total }} 条记录 · 第 {{ page }} 页</p>
+        <UPagination v-model:page="page" :total="total" :items-per-page="pageSize" />
       </div>
     </UCard>
 
-    <UModal v-model="errorDialogOpen">
-      <UCard>
-        <template #header>
-          <h3 class="font-medium">错误详情</h3>
-        </template>
-
-        <div v-if="selectedLog" class="space-y-3">
-          <div>
-            <span class="text-sm font-medium">时间:</span>
-            <span class="ml-2 text-sm text-muted">{{ formatTimestamp(selectedLog.timestamp) }}</span>
+    <UModal v-model:open="errorDialogOpen" title="调用详情">
+      <template #body>
+        <div v-if="selectedLog" class="space-y-4">
+          <dl class="grid grid-cols-[7rem_1fr] gap-x-3 gap-y-2 text-sm">
+            <dt class="text-muted">时间</dt><dd>{{ formatTimestamp(selectedLog.timestamp) }}</dd>
+            <dt class="text-muted">模型</dt><dd>{{ selectedLog.model_name || '-' }}</dd>
+            <dt class="text-muted">账号</dt><dd>{{ selectedLog.account_name || `#${selectedLog.account_id || '-'}` }}</dd>
+            <dt class="text-muted">状态</dt><dd><UBadge :color="getStatusColor(selectedLog.status_code)" variant="subtle">{{ selectedLog.status_code ?? '-' }}</UBadge></dd>
+            <dt class="text-muted">Tokens</dt><dd>{{ formatTokens(selectedLog) }}</dd>
+            <dt class="text-muted">耗时</dt><dd>{{ formatTiming(selectedLog) }}</dd>
+          </dl>
+          <div v-if="selectedLog.error_message">
+            <p class="mb-2 text-sm font-medium">错误信息</p>
+            <pre class="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-error/20 bg-error/5 p-3 text-xs text-error">{{ selectedLog.error_message }}</pre>
           </div>
-          <div>
-            <span class="text-sm font-medium">状态码:</span>
-            <UBadge :color="getStatusColor(selectedLog.status_code)" variant="subtle" size="sm" class="ml-2">
-              {{ selectedLog.status_code }}
-            </UBadge>
-          </div>
-          <div>
-            <span class="text-sm font-medium">错误信息:</span>
-            <pre class="mt-2 rounded-md bg-muted/50 p-3 text-xs">{{ selectedLog.error_message }}</pre>
-          </div>
+          <UAlert v-else color="success" variant="subtle" icon="i-lucide-circle-check" title="本次调用未记录错误" />
         </div>
-
-        <template #footer>
-          <div class="flex justify-end">
-            <UButton @click="errorDialogOpen = false" color="neutral">
-              关闭
-            </UButton>
-          </div>
-        </template>
-      </UCard>
+      </template>
     </UModal>
   </div>
 </template>

@@ -68,7 +68,7 @@ body {
 }
 
 .ocm-page {
-  animation: ocm-page-in 0.45s cubic-bezier(.22, 1, .36, 1) both;
+  animation: ocm-page-in 0.18s cubic-bezier(.22, 1, .36, 1) both;
 }
 
 .ocm-title {
@@ -80,15 +80,14 @@ body {
 .ocm-card {
   border-color: rgba(255, 255, 255, 0.82) !important;
   border-radius: 8px !important;
-  background: rgba(255, 255, 255, 0.72) !important;
-  box-shadow: inset 0 1px 0 #fff, 0 18px 52px rgba(56, 108, 173, 0.09) !important;
-  backdrop-filter: blur(18px) saturate(135%);
-  transition: transform 0.24s ease, box-shadow 0.24s ease;
+  background: rgba(255, 255, 255, 0.9) !important;
+  box-shadow: inset 0 1px 0 #fff, 0 12px 32px rgba(56, 108, 173, 0.08) !important;
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
 }
 
 .ocm-card:hover {
   transform: translateY(-2px);
-  box-shadow: inset 0 1px 0 #fff, 0 24px 58px rgba(37, 99, 176, 0.14) !important;
+  box-shadow: inset 0 1px 0 #fff, 0 16px 38px rgba(37, 99, 176, 0.12) !important;
 }
 
 .ocm-metric-card {
@@ -148,9 +147,150 @@ body {
   border-radius: 8px;
 }
 
+.ocm-auth-stage {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  overflow: hidden;
+  padding: clamp(1rem, 4vw, 4rem);
+  background:
+    radial-gradient(circle at 15% 20%, rgba(56, 189, 248, 0.2), transparent 34%),
+    radial-gradient(circle at 85% 80%, rgba(99, 102, 241, 0.16), transparent 36%),
+    #eaf4ff;
+}
+
+.ocm-auth-panel {
+  display: grid;
+  width: min(100%, 1020px);
+  min-height: 610px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.88);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 34px 90px rgba(37, 99, 176, 0.16);
+  grid-template-columns: 1.08fr 0.92fr;
+}
+
+.ocm-auth-story {
+  position: relative;
+  display: flex;
+  overflow: hidden;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: clamp(2rem, 5vw, 4rem);
+  color: #f8fbff;
+  background: linear-gradient(145deg, #0d2b4f 0%, #124e84 56%, #147ba8 100%);
+}
+
+.ocm-auth-story::after {
+  position: absolute;
+  right: -7rem;
+  bottom: -7rem;
+  width: 22rem;
+  height: 22rem;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 50%;
+  content: "";
+  box-shadow: 0 0 0 3rem rgba(255, 255, 255, 0.035), 0 0 0 7rem rgba(255, 255, 255, 0.025);
+}
+
+.ocm-auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.ocm-auth-brand strong { color: #7dd3fc; }
+.ocm-auth-copy { position: relative; z-index: 1; }
+.ocm-auth-kicker {
+  margin-bottom: 1.25rem;
+  color: #7dd3fc;
+  font: 600 0.72rem/1.2 "DM Sans", sans-serif;
+  letter-spacing: 0.16em;
+}
+
+.ocm-auth-copy h1 {
+  font-size: clamp(2.15rem, 4.2vw, 3.75rem);
+  font-weight: 600;
+  line-height: 1.12;
+  letter-spacing: -0.055em;
+}
+
+.ocm-auth-copy h1 span { color: #bae6fd; }
+.ocm-auth-copy > p:last-child {
+  max-width: 31rem;
+  margin-top: 1.5rem;
+  color: rgba(232, 244, 255, 0.76);
+  font-size: 0.95rem;
+  line-height: 1.8;
+}
+
+.ocm-auth-signal {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  height: 42px;
+  align-items: end;
+  gap: 6px;
+}
+
+.ocm-auth-signal span {
+  width: 5px;
+  border-radius: 99px;
+  background: #7dd3fc;
+  animation: ocm-signal 1.6s ease-in-out infinite alternate;
+}
+.ocm-auth-signal span:nth-child(1) { height: 14px; }
+.ocm-auth-signal span:nth-child(2) { height: 28px; animation-delay: -.4s; }
+.ocm-auth-signal span:nth-child(3) { height: 20px; animation-delay: -.8s; }
+.ocm-auth-signal span:nth-child(4) { height: 36px; animation-delay: -.2s; }
+.ocm-auth-signal span:nth-child(5) { height: 24px; animation-delay: -.6s; }
+
+.ocm-auth-form-wrap {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: clamp(2rem, 5vw, 4.5rem);
+}
+
+.ocm-auth-form-head { margin-bottom: 2rem; }
+.ocm-auth-form-head h2 {
+  margin-top: 1rem;
+  color: #0e2038;
+  font-size: 2rem;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+}
+.ocm-auth-form-head p { margin-top: 0.4rem; color: #64748b; font-size: 0.9rem; }
+.ocm-auth-security {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: #2563eb;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+.ocm-auth-hint { margin-top: 1.5rem; color: #7890ad; font-size: 0.75rem; line-height: 1.6; }
+
+@keyframes ocm-signal {
+  to { height: 10px; opacity: 0.55; }
+}
+
 @keyframes ocm-page-in {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 720px) {
+  .ocm-auth-stage { align-items: stretch; padding: 0; }
+  .ocm-auth-panel { min-height: 100vh; border: 0; border-radius: 0; grid-template-columns: 1fr; }
+  .ocm-auth-story { min-height: 260px; padding: 1.5rem; }
+  .ocm-auth-copy h1 { font-size: 2.15rem; }
+  .ocm-auth-copy > p:last-child { display: none; }
+  .ocm-auth-signal { display: none; }
+  .ocm-auth-form-wrap { padding: 2rem 1.5rem 3rem; }
 }
 
 @media (max-width: 640px) {
@@ -161,4 +301,5 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .ocm-page { animation: none; }
   .ocm-card { transition: none; }
+  .ocm-auth-signal span { animation: none; }
 }

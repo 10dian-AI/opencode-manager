@@ -80,6 +80,8 @@ PROXY_ACCOUNT_CONCURRENCY=2
 # 以下操作会修改官方账号状态，默认关闭
 AUTO_APPLY_REFERRAL_REWARDS=false
 AUTO_CANCEL_SUBSCRIPTION_RENEWAL=false
+# 输入 Cookie 时自动开启中国模型（默认开启）
+AUTO_ENABLE_CHINESE_MODELS=true
 # 风控检测使用的最小探测模型（默认 glm-5.2）
 RISK_CONTROL_CHECK_MODEL=glm-5.2
 ```
@@ -179,7 +181,7 @@ cp .env.example .env
 docker compose up -d
 ```
 
-打开 http://localhost:3030 登录。常用操作：
+打开 http://localhost:3030 登录；外部监控面板位于 http://localhost:3031。常用操作：
 
 ```bash
 docker compose logs -f app     # 查看日志
@@ -190,6 +192,7 @@ docker compose down -v         # 停止并删除数据卷，会清空数据库
 `docker-compose.yml` 说明：
 
 - 宿主端口默认 `3030`，容器内部固定 `3000`。改端口只需在 `.env` 里设 `APP_PORT`，不用动 compose 文件
+- `monitor` 服务将外部只读监控面板映射到宿主 `3031`；可通过 `MONITOR_PORT` 修改，它通过容器内网访问主应用，不需要浏览器跨域
 - `postgres` 使用 `pg_isready` 健康检查，`app` 通过 `depends_on: service_healthy` 等数据库就绪后再启动，避免首次启动建表失败
 - 数据库不对外映射端口，只在内部网络暴露；本地开发想直连可自行加 `ports`
 - 数据存放在 `postgres-data` 命名卷

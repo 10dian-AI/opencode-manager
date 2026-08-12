@@ -133,9 +133,8 @@ watch(
   }
 )
 
-await Promise.all([fetchAccounts(), fetchStats(), fetchAccountRefreshSettings()])
-
 onMounted(() => {
+  void Promise.allSettled([fetchAccounts(), fetchStats(), fetchAccountRefreshSettings()])
   statusSyncTimer = setInterval(() => {
     if (loading.value || batchProgress.value || singleRefreshProgress.value) return
     void Promise.allSettled([fetchAccounts(true), fetchStats()])
@@ -311,20 +310,19 @@ async function onCancelRenewal() {
 }
 
 async function onEnableChineseModels(account: Account) {
-  if (!account.auth_cookie) {
-    toast.add({ title: '该账号未设置 Cookie', color: 'error' })
-    return
-  }
-
   actionId.value = account.id
   accountAction.value = 'enable-chinese'
   try {
     const result = await $fetch('/api/accounts/enable-chinese-models', {
       method: 'POST',
       body: {
-        auth_cookie: account.auth_cookie
+        account_id: account.id
       }
     })
+    if (result.account) {
+      const index = accounts.value.findIndex(item => item.id === account.id)
+      if (index >= 0) accounts.value[index] = result.account
+    }
     toast.add({
       title: result.message || '已开启中国模型支持',
       color: 'success'
@@ -991,12 +989,18 @@ async function exportKeys() {
                   <UBadge v-if="account.subscription_cancelled_at" color="neutral" variant="subtle" size="sm">
                     已取消续费
                   </UBadge>
+                  <UBadge v-if="account.chinese_models_enabled_at" color="info" variant="subtle" size="sm">
+                    中国模型已开启
+                  </UBadge>
                 </div>
                 <div v-if="account.subscription_ends_at" class="mt-1 text-xs text-muted">
                   会员有效期至 {{ formatDate(account.subscription_ends_at) }}
                 </div>
                 <div v-if="account.subscription_cancel_error" class="mt-1 max-w-xs truncate text-xs text-error">
                   取消续费失败：{{ account.subscription_cancel_error }}
+                </div>
+                <div v-if="account.chinese_models_enable_error" class="mt-1 max-w-xs truncate text-xs text-warning" :title="account.chinese_models_enable_error">
+                  中国模型自动开启失败：{{ account.chinese_models_enable_error }}
                 </div>
                 <div v-if="account.last_error" class="mt-1 max-w-xs truncate text-xs text-error">
                   {{ account.last_error }}
@@ -1075,9 +1079,9 @@ async function exportKeys() {
                   <UButton
                     icon="i-lucide-globe"
                     size="xs"
-                    color="neutral"
+                    :color="account.chinese_models_enabled_at ? 'info' : account.chinese_models_enable_error ? 'warning' : 'neutral'"
                     variant="ghost"
-                    title="开启中国模型"
+                    :title="account.chinese_models_enabled_at ? '重新开启中国模型' : '开启中国模型'"
                     :loading="actionId === account.id && accountAction === 'enable-chinese'"
                     @click="onEnableChineseModels(account)"
                   />

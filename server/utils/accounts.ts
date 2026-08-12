@@ -10,9 +10,13 @@ import {
   type AccountRefreshProgressReporter
 } from './account-refresh-progress'
 import { validateAuthCookieValue } from './auth-cookie'
-import { AuthCookieExpiredError, type OpenCodeAccountInfo } from './opencode'
+import { AuthCookieExpiredError, buildAuthCookie, type OpenCodeAccountInfo } from './opencode'
 import { createAccountFetch } from './account-fetch'
 import { ensureAccountIpAssignment } from './ip-pool'
+import {
+  discoverChineseModelsServerId,
+  enableOpenCodeChineseModels
+} from './opencode-chinese-models'
 import {
   inspectRiskControlResponse,
   isProtectedAccountDisabledReason,
@@ -37,6 +41,7 @@ const REFRESH_CONCURRENCY = 4
 const RISK_CONTROL_CHECK_MODEL = process.env.RISK_CONTROL_CHECK_MODEL || 'glm-5.2'
 const AUTO_APPLY_REFERRAL_REWARDS = process.env.AUTO_APPLY_REFERRAL_REWARDS === 'true'
 const AUTO_CANCEL_SUBSCRIPTION_RENEWAL = process.env.AUTO_CANCEL_SUBSCRIPTION_RENEWAL === 'true'
+const AUTO_ENABLE_CHINESE_MODELS = process.env.AUTO_ENABLE_CHINESE_MODELS !== 'false'
 
 let accountPollScheduleHydration: Promise<void> | null = null
 
@@ -235,14 +240,68 @@ async function expandAccountWorkspacesOnce(id: number): Promise<Account[]> {
   }
 }
 
+export async function enableAccountChineseModels(id: number): Promise<Account> {
+  const account = await ensureAccountIpAssignment(id)
+  if (!account) throw createError({ statusCode: 404, statusMessage: 'Account not found' })
+
+  try {
+    const fetchImpl = await createAccountFetch(account)
+    const info = await fetchOpenCodeAccount(
+      account.auth_cookie,
+      account.workspace_id,
+      fetchImpl
+    )
+    const workspaceId = info.workspaceId || account.workspace_id
+    if (!workspaceId) throw new Error('无法获取账号的 workspace ID')
+
+    const response = await fetchImpl(`https://opencode.ai/workspace/${workspaceId}/go`, {
+      headers: {
+        accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'accept-language': 'zh',
+        cookie: buildAuthCookie(account.auth_cookie),
+        referer: 'https://opencode.ai/zh/go',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+      }
+    })
+    if (!response.ok) throw new Error(`获取 workspace 页面失败（${response.status}）`)
+    const serverId = await discoverChineseModelsServerId(await response.text(), fetchImpl)
+    if (!serverId) throw new Error('无法识别开启中国模型所需的服务操作')
+
+    await enableOpenCodeChineseModels(account.auth_cookie, workspaceId, serverId, fetchImpl)
+    return (await updateAccount(id, {
+      workspace_id: workspaceId,
+      chinese_models_enabled_at: new Date().toISOString(),
+      chinese_models_enable_error: null
+    }))!
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    await updateAccount(id, { chinese_models_enable_error: message }).catch(() => {})
+    throw createError({ statusCode: 502, statusMessage: message })
+  }
+}
+
+async function autoEnableChineseModels(accounts: Account[]) {
+  if (!AUTO_ENABLE_CHINESE_MODELS) return
+  await mapConcurrent(accounts, REFRESH_CONCURRENCY, async account => {
+    try {
+      await enableAccountChineseModels(account.id)
+    } catch {
+      // Import and account refresh remain successful; the saved error is shown
+      // in the account list and the user can retry with the globe action.
+    }
+  })
+}
+
 export async function expandAccountWorkspacesByIds(ids: number[]) {
   const expanded = await mapConcurrent(ids, REFRESH_CONCURRENCY, expandAccountWorkspaces)
   await ensureStableIpAssignments()
-  return mapConcurrent(
+  const accounts = await mapConcurrent(
     expanded.flat(),
     REFRESH_CONCURRENCY,
     async account => (await getAccount(account.id)) || account
   )
+  await autoEnableChineseModels(accounts)
+  return getAccountsByIds(accounts.map(account => account.id))
 }
 
 function quotaFromInfo(info: Awaited<ReturnType<typeof fetchOpenCodeAccount>>, now: Date) {

@@ -34,6 +34,8 @@ export interface Account {
   subscription_cancel_checked_at: string | null
   subscription_ends_at: string | null
   subscription_cancel_error: string | null
+  chinese_models_enabled_at: string | null
+  chinese_models_enable_error: string | null
   upstream_api_key: string | null
   ip_pool_id: number | null
   status: AccountStatus
@@ -122,6 +124,8 @@ const ACCOUNT_COLUMNS = new Set<string>([
   'subscription_cancel_checked_at',
   'subscription_ends_at',
   'subscription_cancel_error',
+  'chinese_models_enabled_at',
+  'chinese_models_enable_error',
   'upstream_api_key',
   'ip_pool_id',
   'status',
@@ -232,6 +236,8 @@ const SCHEMA_SQL = `
     subscription_cancel_checked_at TEXT,
     subscription_ends_at TEXT,
     subscription_cancel_error TEXT,
+    chinese_models_enabled_at TEXT,
+    chinese_models_enable_error TEXT,
     upstream_api_key TEXT,
     ip_pool_id BIGINT,
     status TEXT NOT NULL DEFAULT 'pending',
@@ -277,6 +283,28 @@ const SCHEMA_SQL = `
     value TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS call_logs (
+    id BIGSERIAL PRIMARY KEY,
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT now(),
+    api_key_id BIGINT,
+    api_key_prefix TEXT,
+    model_name TEXT,
+    account_id BIGINT,
+    account_name TEXT,
+    is_stream BOOLEAN NOT NULL DEFAULT FALSE,
+    prompt_tokens INTEGER,
+    completion_tokens INTEGER,
+    cached_prompt_tokens INTEGER,
+    created_prompt_tokens INTEGER,
+    throughput DOUBLE PRECISION,
+    first_token_time_ms INTEGER,
+    response_time_ms INTEGER,
+    caller_ip TEXT,
+    status_code INTEGER,
+    error_message TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+
   CREATE TABLE IF NOT EXISTS auth_login_attempts (
     identifier TEXT PRIMARY KEY,
     attempts INTEGER NOT NULL DEFAULT 0,
@@ -296,6 +324,11 @@ const SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_accounts_proxy_pool
     ON accounts(id) WHERE status = 'active' AND subscription_status = 'active';
   CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+  CREATE INDEX IF NOT EXISTS idx_call_logs_timestamp ON call_logs(timestamp DESC);
+  CREATE INDEX IF NOT EXISTS idx_call_logs_api_key_id ON call_logs(api_key_id);
+  CREATE INDEX IF NOT EXISTS idx_call_logs_account_id ON call_logs(account_id);
+  CREATE INDEX IF NOT EXISTS idx_call_logs_model_name ON call_logs(model_name);
+  CREATE INDEX IF NOT EXISTS idx_call_logs_status_code ON call_logs(status_code);
   CREATE INDEX IF NOT EXISTS idx_auth_login_attempts_blocked_until
     ON auth_login_attempts(blocked_until);
 `
@@ -314,10 +347,46 @@ async function initializeSchema(client: SqlClient) {
       ADD CONSTRAINT accounts_ip_pool_id_fkey
       FOREIGN KEY (ip_pool_id) REFERENCES ip_pool(id) ON DELETE SET NULL
     `)
+    await migrateAccountsSchema(client)
+    await migrateCallLogsSchema(client)
     await migrateStoredAuthCookieValues(client)
   } finally {
     await client.query('SELECT pg_advisory_unlock($1)', [4_517_923_001])
   }
+}
+
+async function migrateAccountsSchema(client: SqlClient) {
+  await client.query(`
+    ALTER TABLE accounts
+      ADD COLUMN IF NOT EXISTS chinese_models_enabled_at TEXT,
+      ADD COLUMN IF NOT EXISTS chinese_models_enable_error TEXT
+  `)
+}
+
+async function migrateCallLogsSchema(client: SqlClient) {
+  // CREATE TABLE IF NOT EXISTS does not upgrade installations that already
+  // have an older call_logs table, so keep all additive migrations explicit.
+  await client.query(`
+    ALTER TABLE call_logs
+      ADD COLUMN IF NOT EXISTS timestamp TIMESTAMPTZ NOT NULL DEFAULT now(),
+      ADD COLUMN IF NOT EXISTS api_key_id BIGINT,
+      ADD COLUMN IF NOT EXISTS api_key_prefix TEXT,
+      ADD COLUMN IF NOT EXISTS model_name TEXT,
+      ADD COLUMN IF NOT EXISTS account_id BIGINT,
+      ADD COLUMN IF NOT EXISTS account_name TEXT,
+      ADD COLUMN IF NOT EXISTS is_stream BOOLEAN NOT NULL DEFAULT FALSE,
+      ADD COLUMN IF NOT EXISTS prompt_tokens INTEGER,
+      ADD COLUMN IF NOT EXISTS completion_tokens INTEGER,
+      ADD COLUMN IF NOT EXISTS cached_prompt_tokens INTEGER,
+      ADD COLUMN IF NOT EXISTS created_prompt_tokens INTEGER,
+      ADD COLUMN IF NOT EXISTS throughput DOUBLE PRECISION,
+      ADD COLUMN IF NOT EXISTS first_token_time_ms INTEGER,
+      ADD COLUMN IF NOT EXISTS response_time_ms INTEGER,
+      ADD COLUMN IF NOT EXISTS caller_ip TEXT,
+      ADD COLUMN IF NOT EXISTS status_code INTEGER,
+      ADD COLUMN IF NOT EXISTS error_message TEXT,
+      ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  `)
 }
 
 async function migrateStoredAuthCookieValues(client: SqlClient) {

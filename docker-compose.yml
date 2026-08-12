@@ -46,9 +46,22 @@ services:
       PROXY_ACCOUNT_CONCURRENCY: ${PROXY_ACCOUNT_CONCURRENCY:-2}
       AUTO_APPLY_REFERRAL_REWARDS: ${AUTO_APPLY_REFERRAL_REWARDS:-false}
       AUTO_CANCEL_SUBSCRIPTION_RENEWAL: ${AUTO_CANCEL_SUBSCRIPTION_RENEWAL:-false}
+      AUTO_ENABLE_CHINESE_MODELS: ${AUTO_ENABLE_CHINESE_MODELS:-true}
     ports:
       # Host port 3030 -> container port 3000.
       - "${APP_PORT:-3030}:3000"
+
+  monitor:
+    image: ghcr.io/10dian-ai/opencode-manager:latest
+    restart: unless-stopped
+    depends_on:
+      - app
+    command: ["bun", "monitor-server.mjs"]
+    environment:
+      MONITOR_PORT: 3031
+      MONITOR_API_BASE: http://app:3000
+    ports:
+      - "${MONITOR_PORT:-3031}:3031"
 
 volumes:
   postgres-data:

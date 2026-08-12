@@ -1,4 +1,3 @@
-import type { SqlClient } from './db'
 import { getDb } from './db'
 
 export interface CallLog {
@@ -23,52 +22,7 @@ export interface CallLog {
   created_at: string
 }
 
-const SCHEMA_SQL = `
-  CREATE TABLE IF NOT EXISTS call_logs (
-    id BIGSERIAL PRIMARY KEY,
-    timestamp TIMESTAMPTZ NOT NULL DEFAULT now(),
-    api_key_id BIGINT,
-    api_key_prefix TEXT,
-    model_name TEXT,
-    account_id BIGINT,
-    account_name TEXT,
-    is_stream BOOLEAN NOT NULL DEFAULT false,
-    prompt_tokens INTEGER,
-    completion_tokens INTEGER,
-    cached_prompt_tokens INTEGER,
-    created_prompt_tokens INTEGER,
-    throughput DOUBLE PRECISION,
-    first_token_time_ms INTEGER,
-    response_time_ms INTEGER,
-    caller_ip TEXT,
-    status_code INTEGER,
-    error_message TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_call_logs_timestamp ON call_logs(timestamp DESC);
-  CREATE INDEX IF NOT EXISTS idx_call_logs_api_key_id ON call_logs(api_key_id);
-  CREATE INDEX IF NOT EXISTS idx_call_logs_account_id ON call_logs(account_id);
-  CREATE INDEX IF NOT EXISTS idx_call_logs_model_name ON call_logs(model_name);
-  CREATE INDEX IF NOT EXISTS idx_call_logs_status_code ON call_logs(status_code);
-`
-
-let schemaInitialized = false
-
-async function ensureSchema() {
-  if (schemaInitialized) return
-  const client = await getDb()
-  await client.query('SELECT pg_advisory_lock($1)', [4_517_923_002])
-  try {
-    await client.query(SCHEMA_SQL)
-    schemaInitialized = true
-  } finally {
-    await client.query('SELECT pg_advisory_unlock($1)', [4_517_923_002])
-  }
-}
-
 export async function createCallLog(log: Omit<CallLog, 'id' | 'created_at'>): Promise<void> {
-  await ensureSchema()
   const client = await getDb()
   await client.query(
     `INSERT INTO call_logs (
@@ -114,7 +68,6 @@ export interface CallLogQuery {
 }
 
 export async function queryCallLogs(query: CallLogQuery): Promise<{ logs: CallLog[]; total: number }> {
-  await ensureSchema()
   const client = await getDb()
 
   const conditions: string[] = []
@@ -185,8 +138,8 @@ export async function queryCallLogs(query: CallLogQuery): Promise<{ logs: CallLo
   )
   const total = countResult.rows[0]?.count || 0
 
-  const limit = query.limit || 50
-  const offset = query.offset || 0
+  const limit = Math.min(500, Math.max(1, query.limit ?? 50))
+  const offset = Math.max(0, query.offset ?? 0)
   paramCount++
   values.push(limit)
   paramCount++
@@ -201,7 +154,6 @@ export async function queryCallLogs(query: CallLogQuery): Promise<{ logs: CallLo
 }
 
 export async function deleteOldCallLogs(daysToKeep = 30): Promise<number> {
-  await ensureSchema()
   const client = await getDb()
   const result = await client.query(
     `DELETE FROM call_logs WHERE timestamp < now() - ($1 || ' days')::interval`,

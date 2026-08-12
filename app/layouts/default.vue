@@ -13,7 +13,7 @@ const links = [
 
 <template>
   <div class="ocm-shell min-h-screen">
-    <UHeader class="ocm-header">
+    <UHeader class="ocm-header" :toggle="false">
       <template #left>
         <div class="flex items-center gap-3">
           <span class="ocm-brand-mark">

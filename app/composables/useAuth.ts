@@ -16,10 +16,11 @@ export function useAuth() {
   }
 
   async function login(key: string) {
-    await $fetch('/api/auth/login', {
+    await requestFetch('/api/auth/login', {
       method: 'POST',
       body: { key }
     })
+    await requestFetch('/api/auth/me')
     authenticated.value = true
   }
 

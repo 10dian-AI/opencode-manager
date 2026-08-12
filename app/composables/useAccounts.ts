@@ -24,6 +24,8 @@ export interface Account {
   subscription_cancel_checked_at: string | null
   subscription_ends_at: string | null
   subscription_cancel_error: string | null
+  chinese_models_enabled_at: string | null
+  chinese_models_enable_error: string | null
   has_upstream_api_key: boolean
   ip_pool_id: number | null
   status: 'pending' | 'active' | 'error' | 'disabled'

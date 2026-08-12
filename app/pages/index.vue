@@ -6,12 +6,14 @@ const toast = useToast()
 const refreshing = ref(false)
 const refreshProgress = ref<AccountBatchProgress | null>(null)
 
-await Promise.all([fetchAccounts(), fetchStats()])
+onMounted(() => {
+  void Promise.allSettled([fetchAccounts(), fetchStats()])
+})
 
 const cards = computed(() => [
   { label: '可用会员', value: `${stats.value?.available ?? 0} / ${stats.value?.members ?? 0}`, icon: 'i-lucide-users', color: 'primary' as const },
-  { label: '正常账号', value: stats.value?.active ?? 0, icon: 'i-lucide-check-circle', color: 'success' as const },
-  { label: '异常账号', value: stats.value?.error ?? 0, icon: 'i-lucide-circle-alert', color: 'error' as const },
+  { label: '可用账号', value: stats.value?.active ?? 0, icon: 'i-lucide-check-circle', color: 'success' as const },
+  { label: '异常账号', value: stats.value?.error ?? 0, icon: 'i-lucide-shield-alert', color: 'error' as const },
   { label: '滚动剩余额度', value: `$${(stats.value?.rollingRemainingAmount ?? 0).toFixed(2)}`, icon: 'i-lucide-wallet-cards', color: 'info' as const }
 ])
 

@@ -5,28 +5,39 @@ export default defineEventHandler(async (event) => {
   const accounts = await listAccounts()
 
   const members = accounts.filter(account => account.subscription_status === 'active')
-  const available = members.filter(account =>
-    account.status === 'active' && !account.disabled_reason
+  const availableAccounts = accounts.filter(account => account.status === 'active')
+  const availableMembers = members.filter(account =>
+    account.status === 'active' &&
+    account.disabled_reason !== 'risk_control' &&
+    typeof account.monthly_usage === 'number' &&
+    Number.isFinite(account.monthly_usage) &&
+    account.monthly_usage < 100
+  )
+  const riskControlled = accounts.filter(account =>
+    account.disabled_reason === 'risk_control'
+  )
+  const nonMembers = accounts.filter(account =>
+    account.subscription_status !== null && account.subscription_status !== 'active'
   )
   return {
     total: accounts.length,
-    active: accounts.filter(a => a.status === 'active').length,
-    error: accounts.filter(a => a.status === 'error').length,
+    active: availableAccounts.length,
+    error: riskControlled.length,
     disabled: accounts.filter(a => a.status === 'disabled').length,
     pending: accounts.filter(a => a.status === 'pending').length,
     members: members.length,
-    nonMembers: accounts.length - members.length,
-    available: available.length,
-    avgRollingRemaining: avgRemaining(available.map(a => a.rolling_usage)),
-    avgWeeklyRemaining: avgRemaining(available.map(a => a.weekly_usage)),
-    avgMonthlyRemaining: avgRemaining(available.map(a => a.monthly_usage)),
-    totalBalance: available.reduce((sum, account) => sum + (account.balance || 0), 0),
-    rollingRemainingAmount: sumRemaining(available, 'rolling_usage', QUOTA_LIMITS_USD.rolling),
-    weeklyRemainingAmount: sumRemaining(available, 'weekly_usage', QUOTA_LIMITS_USD.weekly),
-    monthlyRemainingAmount: sumRemaining(available, 'monthly_usage', QUOTA_LIMITS_USD.monthly),
-    rollingLimitAmount: knownLimit(available, 'rolling_usage', QUOTA_LIMITS_USD.rolling),
-    weeklyLimitAmount: knownLimit(available, 'weekly_usage', QUOTA_LIMITS_USD.weekly),
-    monthlyLimitAmount: knownLimit(available, 'monthly_usage', QUOTA_LIMITS_USD.monthly)
+    nonMembers: nonMembers.length,
+    available: availableMembers.length,
+    avgRollingRemaining: avgRemaining(availableMembers.map(a => a.rolling_usage)),
+    avgWeeklyRemaining: avgRemaining(availableMembers.map(a => a.weekly_usage)),
+    avgMonthlyRemaining: avgRemaining(availableMembers.map(a => a.monthly_usage)),
+    totalBalance: availableAccounts.reduce((sum, account) => sum + (account.balance || 0), 0),
+    rollingRemainingAmount: sumRemaining(availableMembers, 'rolling_usage', QUOTA_LIMITS_USD.rolling),
+    weeklyRemainingAmount: sumRemaining(availableMembers, 'weekly_usage', QUOTA_LIMITS_USD.weekly),
+    monthlyRemainingAmount: sumRemaining(availableMembers, 'monthly_usage', QUOTA_LIMITS_USD.monthly),
+    rollingLimitAmount: knownLimit(availableMembers, 'rolling_usage', QUOTA_LIMITS_USD.rolling),
+    weeklyLimitAmount: knownLimit(availableMembers, 'weekly_usage', QUOTA_LIMITS_USD.weekly),
+    monthlyLimitAmount: knownLimit(availableMembers, 'monthly_usage', QUOTA_LIMITS_USD.monthly)
   }
 })
 
