@@ -1,6 +1,6 @@
 export type AccountPollKind = 'quota' | 'membership' | 'error'
 
-export const ERROR_REFRESH_INTERVAL_MS = 5 * 60 * 1000
+export const ERROR_REFRESH_INTERVAL_MS = 5 * 1000
 
 export interface PollableAccount {
   id: number

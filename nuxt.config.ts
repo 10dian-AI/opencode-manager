@@ -17,7 +17,7 @@ export default defineNuxtConfig({
       tasks: true
     },
     scheduledTasks: {
-      '* * * * *': ['refresh-accounts'],
+      '* * * * *': ['refresh-accounts', 'refresh-error-accounts'],
       '*/15 * * * *': ['refresh-memberships', 'refresh-opencode-modules']
     }
   }

@@ -14,7 +14,7 @@ const cards = computed(() => [
   { label: '可用会员', value: `${stats.value?.available ?? 0} / ${stats.value?.members ?? 0}`, icon: 'i-lucide-users', color: 'primary' as const },
   { label: '可用账号', value: stats.value?.active ?? 0, icon: 'i-lucide-check-circle', color: 'success' as const },
   { label: '异常账号', value: stats.value?.error ?? 0, icon: 'i-lucide-shield-alert', color: 'error' as const },
-  { label: '滚动剩余额度', value: `$${(stats.value?.rollingRemainingAmount ?? 0).toFixed(2)}`, icon: 'i-lucide-wallet-cards', color: 'info' as const }
+  { label: '实际可用额度', value: `$${(stats.value?.totalEffectiveRemaining ?? 0).toFixed(2)}`, icon: 'i-lucide-wallet-cards', color: 'info' as const }
 ])
 
 const recent = computed(() => accounts.value.slice(0, 5))
@@ -180,7 +180,7 @@ async function onRefreshAll() {
         <div class="space-y-4">
           <div>
             <div class="mb-1 flex justify-between text-sm">
-              <span class="text-muted">平均滚动剩余</span>
+              <span class="text-muted">剩余 5h 限额</span>
               <span>{{ stats?.avgRollingRemaining ?? 0 }}%</span>
             </div>
             <UProgress :model-value="stats?.avgRollingRemaining ?? 0" />
@@ -188,7 +188,7 @@ async function onRefreshAll() {
           </div>
           <div>
             <div class="mb-1 flex justify-between text-sm">
-              <span class="text-muted">平均每周剩余</span>
+              <span class="text-muted">剩余周限额</span>
               <span>{{ stats?.avgWeeklyRemaining ?? 0 }}%</span>
             </div>
             <UProgress :model-value="stats?.avgWeeklyRemaining ?? 0" color="info" />
@@ -196,13 +196,19 @@ async function onRefreshAll() {
           </div>
           <div>
             <div class="mb-1 flex justify-between text-sm">
-              <span class="text-muted">平均每月剩余</span>
+              <span class="text-muted">剩余月配额</span>
               <span>{{ stats?.avgMonthlyRemaining ?? 0 }}%</span>
             </div>
             <UProgress :model-value="stats?.avgMonthlyRemaining ?? 0" color="warning" />
             <p class="mt-1 text-xs text-muted">剩余 ${{ stats?.monthlyRemainingAmount?.toFixed?.(2) ?? '0.00' }} / ${{ stats?.monthlyLimitAmount?.toFixed?.(2) ?? '0.00' }}</p>
           </div>
           <USeparator />
+          <div class="flex items-center justify-between text-sm">
+            <span class="text-muted">实际可用总额度</span>
+            <UTooltip text="每账号取 5h/周/月 三窗口剩余的最小值后求和">
+              <span class="cursor-help font-medium text-highlighted underline decoration-dashed">${{ stats?.totalEffectiveRemaining?.toFixed?.(2) ?? '0.00' }}</span>
+            </UTooltip>
+          </div>
           <div class="flex items-center justify-between text-sm">
             <span class="text-muted">可用账号余额</span>
             <span class="font-medium text-highlighted">${{ stats?.totalBalance?.toFixed?.(2) ?? '0.00' }}</span>

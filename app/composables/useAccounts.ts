@@ -58,6 +58,7 @@ export interface Stats {
   rollingLimitAmount: number
   weeklyLimitAmount: number
   monthlyLimitAmount: number
+  totalEffectiveRemaining: number
 }
 
 export interface ReferralRewardList {

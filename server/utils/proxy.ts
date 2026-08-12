@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import type { H3Event } from 'h3'
 import {
   AdaptiveProxyWorkerController,
@@ -65,6 +66,64 @@ function refreshAfterUpstreamError(accountId: number) {
   void refreshAccount(accountId).catch(() => {
     // The in-memory polling schedule will retry this account later.
   })
+}
+
+/**
+ * Pick a stable account index for an affinity key using consistent hashing.
+ * @param affinityKey  session_id / prompt_cache_key extracted from the request body
+ * @param accountCount total number of proxy candidates
+ */
+function affinityIndex(affinityKey: string, accountCount: number): number {
+  const hash = createHash('sha256').update(affinityKey).digest()
+  // Read the first 4 bytes as a big-endian uint32 and modulo
+  const val = (hash[0]! << 24) | (hash[1]! << 16) | (hash[2]! << 8) | hash[3]!
+  return Math.abs(val) % accountCount
+}
+
+/**
+ * Extract the affinity key from an OpenAI-compatible request body.
+ * Checks `user` (session_id by convention) first, then custom extension fields.
+ */
+function extractAffinityKey(body: string): string | null {
+  try {
+    const data = JSON.parse(body)
+    if (typeof data.user === 'string' && data.user.trim()) return data.user.trim()
+    if (typeof data?.metadata?.prompt_cache_key === 'string' && data.metadata.prompt_cache_key.trim()) {
+      return data.metadata.prompt_cache_key.trim()
+    }
+  } catch {}
+  return null
+}
+
+async function waitForAccountSlotAffinity(signal: AbortSignal, affinityKey: string) {
+  while (!signal.aborted) {
+    const accounts = await getProxyCandidates()
+    if (!accounts.length) return null
+    // Use the affinity key to pick a deterministic starting account
+    const start = affinityIndex(affinityKey, accounts.length)
+    // Try affinity account first, then fall back to the rest in order
+    for (let attempt = 0; attempt < accounts.length; attempt++) {
+      const account = accounts[(start + attempt) % accounts.length]!
+      const release = await tryAcquireAccountProxySlot(
+        account.id,
+        PROXY_ACCOUNT_CONCURRENCY,
+        PROXY_UPSTREAM_TIMEOUT_MS + 60_000
+      )
+      if (release) return { account, release }
+    }
+    await new Promise<void>((resolve, reject) => {
+      const finish = () => { signal.removeEventListener('abort', abort); resolve() }
+      const timer = setTimeout(finish, 25)
+      const abort = () => {
+        clearTimeout(timer)
+        signal.removeEventListener('abort', abort)
+        reject(signal.reason || new ProxyRequestAbortedError())
+      }
+      signal.addEventListener('abort', abort, { once: true })
+      if (signal.aborted) abort()
+    })
+  }
+  throw signal.reason || new ProxyRequestAbortedError()
 }
 
 async function waitForAccountSlot(signal: AbortSignal) {
@@ -153,7 +212,7 @@ function responseHoldingAccountSlot(
 
 export async function proxyChatCompletions(
   event: H3Event,
-  apiKeyInfo?: { key: string; keyId: number | null; keyPrefix: string }
+  apiKeyInfo?: { key: string; keyId: number | null; keyPrefix: string; affinityEnabled?: boolean }
 ): Promise<Response> {
   const requestLifecycle = createProxyRequestLifecycle(event)
   const upstreamTimeoutSignal = AbortSignal.timeout(PROXY_UPSTREAM_TIMEOUT_MS)
@@ -196,14 +255,20 @@ export async function proxyChatCompletions(
         return jsonError(400, 'Request body is required', 'invalid_request')
       }
 
-      // Extract model name and stream flag from request body
+      // Extract model name, stream flag, and affinity key from request body
+      let affinityKey: string | null = null
       try {
         const requestData = JSON.parse(body.toString())
         logData.modelName = requestData.model || null
         logData.isStream = Boolean(requestData.stream)
+        if (apiKeyInfo?.affinityEnabled) {
+          affinityKey = extractAffinityKey(body.toString())
+        }
       } catch {}
 
-      const slot = await waitForAccountSlot(upstreamSignal)
+      const slot = affinityKey
+        ? await waitForAccountSlotAffinity(upstreamSignal, affinityKey)
+        : await waitForAccountSlot(upstreamSignal)
       if (!slot) {
         logData.statusCode = 503
         logData.errorMessage = '号池中暂无可用账号，请稍后重试'

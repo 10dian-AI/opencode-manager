@@ -18,23 +18,32 @@ function fetchWithDeadline(
 
 /**
  * Parse the server action ID from the workspace settings page HTML.
- * The form looks like:
- *   <form method="post" data-slot="setting-row"
- *         action="/_server?id=57e61af1bc9c8fa15e0c1a880a2a6754484afdd4a3bc4426b3fc02e3a7ff4d69">
+ *
+ * Actual browser request (from Network capture):
+ *   POST https://opencode.ai/_server
+ *   x-server-id: 57e61af1bc9c8fa15e0c1a880a2a6754484afdd4a3bc4426b3fc02e3a7ff4d69
+ *   x-server-instance: server-fn:N
+ *   content-type: application/x-www-form-urlencoded
+ *   body: workspaceID=wrk_xxx&useChinaProviders=true
+ *
+ * The ID comes from the form's action attribute in the HTML:
+ *   <form action="/_server?id=57e61af1bc9c8fa15e0c1a880a2a6754484afdd4a3bc4426b3fc02e3a7ff4d69"
+ *         method="post" data-slot="setting-row">
+ *     <input type="hidden" name="workspaceID" value="wrk_xxx">
  *     <input type="hidden" name="useChinaProviders" value="true">
  *   </form>
  */
 export function discoverChineseModelsServerId(html: string): string | null {
-  // Match: action="/_server?id=<64-hex-char>" near useChinaProviders
+  // Primary: action="/_server?id=<64hex>" near useChinaProviders
   const formMatch = html.match(
     /action="\/(?:_server|server)\?id=([a-f0-9]{64})"[^>]*>[\s\S]{0,800}?name="useChinaProviders"/i
   )
   if (formMatch) return formMatch[1]!
 
-  // Wider search: find /_server?id= anywhere close to useChinaProviders
+  // Fallback: search backwards from useChinaProviders within 1000 chars
   const idx = html.indexOf('useChinaProviders')
   if (idx !== -1) {
-    const window = html.slice(Math.max(0, idx - 800), idx + 100)
+    const window = html.slice(Math.max(0, idx - 1000), idx + 100)
     const idMatch = window.match(/\/_server\?id=([a-f0-9]{64})/i)
     if (idMatch) return idMatch[1]!
   }
@@ -49,7 +58,10 @@ export async function enableOpenCodeChineseModels(
 ): Promise<void> {
   const cookie = buildAuthCookie(authCookie)
 
-  // The form uses a standard POST with application/x-www-form-urlencoded
+  // Exact same format as the real browser request captured from Network tab:
+  // POST https://opencode.ai/_server
+  // Headers: x-server-id, x-server-instance, content-type, cookie, referer
+  // Body: application/x-www-form-urlencoded  workspaceID=...&useChinaProviders=true
   const body = new URLSearchParams({
     workspaceID: workspaceId,
     useChinaProviders: 'true'
@@ -57,12 +69,15 @@ export async function enableOpenCodeChineseModels(
 
   const response = await fetchWithDeadline(
     fetchImpl,
-    `${BASE}/_server?id=${serverId}`,
+    `${BASE}/_server`,
     {
       method: 'POST',
       headers: {
         accept: '*/*',
         'content-type': 'application/x-www-form-urlencoded',
+        'x-server-id': serverId,
+        'x-server-instance': 'server-fn:0',
+        'x-single-flight': 'true',
         cookie,
         referer: `${BASE}/workspace/${workspaceId}/go`,
         'user-agent': UA
@@ -74,7 +89,7 @@ export async function enableOpenCodeChineseModels(
   if (!response.ok) {
     const detail = (await response.text().catch(() => '')).slice(0, 300)
     throw new Error(
-      `Failed to enable Chinese models (status ${response.status}${detail ? `: ${detail}` : ''})`
+      `Failed to enable Chinese models (HTTP ${response.status}${detail ? `: ${detail}` : ''})`
     )
   }
 }

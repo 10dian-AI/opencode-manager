@@ -19,6 +19,16 @@ export default defineEventHandler(async (event) => {
   const nonMembers = accounts.filter(account =>
     account.subscription_status !== null && account.subscription_status !== 'active'
   )
+
+  // For each available member, effective remaining = min(5h remaining, weekly remaining, monthly remaining)
+  // This reflects the true usable quota before hitting any window limit.
+  const effectiveRemainingAmounts = availableMembers.map(a =>
+    effectiveRemainingAmount(a, QUOTA_LIMITS_USD)
+  )
+  const totalEffectiveRemaining = Math.round(
+    effectiveRemainingAmounts.reduce((sum, v) => sum + v, 0) * 100
+  ) / 100
+
   return {
     total: accounts.length,
     active: availableAccounts.length,
@@ -37,9 +47,30 @@ export default defineEventHandler(async (event) => {
     monthlyRemainingAmount: sumRemaining(availableMembers, 'monthly_usage', QUOTA_LIMITS_USD.monthly),
     rollingLimitAmount: knownLimit(availableMembers, 'rolling_usage', QUOTA_LIMITS_USD.rolling),
     weeklyLimitAmount: knownLimit(availableMembers, 'weekly_usage', QUOTA_LIMITS_USD.weekly),
-    monthlyLimitAmount: knownLimit(availableMembers, 'monthly_usage', QUOTA_LIMITS_USD.monthly)
+    monthlyLimitAmount: knownLimit(availableMembers, 'monthly_usage', QUOTA_LIMITS_USD.monthly),
+    totalEffectiveRemaining
   }
 })
+
+/**
+ * Effective remaining for one account = min of all three window remainders.
+ * If a window's usage is unknown, it is excluded from the min (treated as unlimited).
+ * If all windows are unknown, returns 0.
+ */
+function effectiveRemainingAmount(
+  account: Account,
+  limits: typeof QUOTA_LIMITS_USD
+): number {
+  const windows = [
+    { usage: account.rolling_usage, limit: limits.rolling },
+    { usage: account.weekly_usage, limit: limits.weekly },
+    { usage: account.monthly_usage, limit: limits.monthly }
+  ]
+  const known = windows
+    .filter(w => typeof w.usage === 'number' && Number.isFinite(w.usage))
+    .map(w => remainingAmount(w.usage, w.limit))
+  return known.length ? Math.min(...known) : 0
+}
 
 function sumRemaining(
   accounts: Account[],

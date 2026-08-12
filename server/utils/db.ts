@@ -58,6 +58,7 @@ export interface ManagedApiKey {
   name: string
   key_hash: string
   key_prefix: string
+  affinity_enabled: boolean
   created_at: string
 }
 
@@ -262,6 +263,7 @@ const SCHEMA_SQL = `
     name TEXT NOT NULL,
     key_hash TEXT NOT NULL UNIQUE,
     key_prefix TEXT NOT NULL,
+    affinity_enabled BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   );
 
@@ -360,6 +362,10 @@ async function migrateAccountsSchema(client: SqlClient) {
     ALTER TABLE accounts
       ADD COLUMN IF NOT EXISTS chinese_models_enabled_at TEXT,
       ADD COLUMN IF NOT EXISTS chinese_models_enable_error TEXT
+  `)
+  await client.query(`
+    ALTER TABLE api_keys
+      ADD COLUMN IF NOT EXISTS affinity_enabled BOOLEAN NOT NULL DEFAULT FALSE
   `)
 }
 
@@ -637,6 +643,13 @@ export async function createManagedApiKey(input: {
 export async function deleteManagedApiKey(id: number) {
   const result = await query('DELETE FROM api_keys WHERE id = $1', [id])
   return { changes: result.rowCount }
+}
+
+export async function updateManagedApiKeyAffinity(id: number, affinity_enabled: boolean): Promise<ManagedApiKey | undefined> {
+  return queryRow<ManagedApiKey>(
+    `UPDATE api_keys SET affinity_enabled = $1 WHERE id = $2 RETURNING *`,
+    [affinity_enabled, id]
+  )
 }
 
 export async function getManagedApiKeyHashes(): Promise<Set<string>> {

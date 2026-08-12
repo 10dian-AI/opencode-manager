@@ -10,7 +10,7 @@ import {
   type AccountRefreshProgressReporter
 } from './account-refresh-progress'
 import { validateAuthCookieValue } from './auth-cookie'
-import { AuthCookieExpiredError, buildAuthCookie, type OpenCodeAccountInfo } from './opencode'
+import { AuthCookieExpiredError, buildAuthCookie, type OpenCodeAccountInfo, cancelOpenCodeSubscriptionRenewal, fetchOpenCodeAccount } from './opencode'
 import { createAccountFetch } from './account-fetch'
 import { ensureAccountIpAssignment } from './ip-pool'
 import {
@@ -281,6 +281,45 @@ export async function enableAccountChineseModels(id: number): Promise<Account> {
   }
 }
 
+async function autoCancelSubscriptionRenewal(accounts: Account[]) {
+  await mapConcurrent(accounts, REFRESH_CONCURRENCY, async account => {
+    try {
+      if (
+        account.subscription_status !== 'active' ||
+        !account.workspace_id ||
+        account.subscription_cancelled_at
+      ) return
+      const fetchImpl = await createAccountFetch(account)
+      const info = await fetchOpenCodeAccount(account.auth_cookie, account.workspace_id, fetchImpl)
+      if (
+        !info.liteSubscriptionId ||
+        !info.billingPortalServerId ||
+        info.subscriptionStatus !== 'active'
+      ) return
+      const cancellation = await cancelOpenCodeSubscriptionRenewal(
+        account.auth_cookie,
+        account.workspace_id,
+        info.liteSubscriptionId,
+        info.billingPortalServerId,
+        fetchImpl
+      )
+      const checkedAt = new Date().toISOString()
+      await updateAccount(account.id, {
+        cancelled_subscription_id: info.liteSubscriptionId,
+        subscription_cancelled_at: cancellation.alreadyCancelled && account.subscription_cancelled_at
+          ? account.subscription_cancelled_at
+          : checkedAt,
+        subscription_cancel_checked_at: checkedAt,
+        subscription_ends_at: cancellation.currentPeriodEnd,
+        subscription_cancel_error: null
+      })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      await updateAccount(account.id, { subscription_cancel_error: message }).catch(() => {})
+    }
+  })
+}
+
 async function autoEnableChineseModels(accounts: Account[]) {
   if (!AUTO_ENABLE_CHINESE_MODELS) return
   await mapConcurrent(accounts, REFRESH_CONCURRENCY, async account => {
@@ -301,7 +340,12 @@ export async function expandAccountWorkspacesByIds(ids: number[]) {
     REFRESH_CONCURRENCY,
     async account => (await getAccount(account.id)) || account
   )
-  await autoEnableChineseModels(accounts)
+  // Auto-enable Chinese models and auto-cancel subscription renewal both run
+  // in parallel and are fire-and-forget — import succeeds even if either fails.
+  await Promise.allSettled([
+    autoEnableChineseModels(accounts),
+    autoCancelSubscriptionRenewal(accounts)
+  ])
   return getAccountsByIds(accounts.map(account => account.id))
 }
 
@@ -732,6 +776,19 @@ export async function checkAllAccountRiskControls() {
     (account.status === 'active' || account.disabled_reason === RISK_CONTROL_DISABLED_REASON)
   )
   return mapConcurrent(accounts, REFRESH_CONCURRENCY, account => checkAccountRiskControl(account.id))
+}
+
+export async function refreshDueErrorAccounts(now = new Date()) {
+  const settings = await getAccountRefreshSettings()
+  if (!settings.auto_refresh_errors) return []
+  const nowMs = now.getTime()
+  const ids = (await listAccounts()).filter(account => {
+    if (account.status !== 'error') return false
+    if (account.disabled_reason === 'manual' || account.disabled_reason === 'auth_expired') return false
+    const lastSynced = account.last_synced_at ? new Date(account.last_synced_at).getTime() : 0
+    return !Number.isFinite(lastSynced) || lastSynced + ERROR_REFRESH_INTERVAL_MS <= nowMs
+  }).map(account => account.id)
+  return refreshScheduledAccounts([...new Set(ids)])
 }
 
 export async function refreshDueAccounts(now = new Date()) {
