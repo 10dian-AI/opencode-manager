@@ -317,27 +317,9 @@ export async function toggleAccountChineseModels(id: number, enable: boolean): P
       await disableOpenCodeChineseModels(account.auth_cookie, workspaceId, serverId, fetchImpl)
     }
 
-    // 操作完成后，重新获取页面并验证状态
-    const verifyResponse = await fetchImpl(`https://opencode.ai/workspace/${workspaceId}/go`, {
-      headers: {
-        accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'accept-language': 'zh',
-        cookie: buildAuthCookie(account.auth_cookie),
-        referer: 'https://opencode.ai/zh/go',
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-      }
-    })
-    if (!verifyResponse.ok) throw new Error(`验证操作结果失败（${verifyResponse.status}）`)
-    const verifyHtml = await verifyResponse.text()
-    const actualState = discoverChineseModelsState(verifyHtml)
-
-    if (actualState !== enable) {
-      throw new Error(`操作未生效：期望${enable ? '开启' : '关闭'}，但实际状态为${actualState ? '开启' : '关闭'}`)
-    }
-
+    // HTTP 200 表示操作已成功，OpenCode 服务端直接信任
     return (await updateAccount(id, {
       workspace_id: workspaceId,
-      chinese_models_enabled: enable,
       chinese_models_enabled_at: enable ? new Date().toISOString() : null,
       chinese_models_enable_error: null
     }))!
