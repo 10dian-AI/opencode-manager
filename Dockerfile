@@ -31,12 +31,16 @@ ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=3000
 
+# Install python3 for china_models_http.py
+RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY --from=runtime-deps --chown=bun:bun /runtime-deps/node_modules ./node_modules
 COPY --from=builder --chown=bun:bun /app/.output ./.output
 COPY --from=builder --chown=bun:bun /app/monitor-server.mjs ./monitor-server.mjs
 COPY --from=builder --chown=bun:bun /app/public ./public
+COPY --from=builder --chown=bun:bun /app/server/utils/china_models_http.py ./server/utils/china_models_http.py
 
 USER bun
 EXPOSE 3000 3031

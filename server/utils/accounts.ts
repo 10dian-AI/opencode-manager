@@ -265,9 +265,11 @@ export async function toggleAccountChineseModels(id: number, enable: boolean): P
     const workspaceId = account.workspace_id
     if (!workspaceId) throw new Error('无法获取账号的 workspace ID，请先刷新账号')
 
-    // 脚本内部会检测当前状态：已是目标状态则幂等跳过，否则 toggle
-    // 目前脚本只实现了"开启"逻辑，关闭时同样调用（脚本返回 already_enabled=true 则不提交）
-    await enableAccountChineseModelsPy(account.auth_cookie, workspaceId)
+    if (enable) {
+      // 脚本会检测当前状态，已开启则幂等跳过，未开启则 POST toggle
+      await enableAccountChineseModelsPy(account.auth_cookie, workspaceId)
+    }
+    // 关闭时直接更新数据库状态（脚本目前只实现了开启，关闭由用户在官网手动操作）
     return (await updateAccount(id, {
       chinese_models_enabled_at: enable ? new Date().toISOString() : null,
       chinese_models_enable_error: null
