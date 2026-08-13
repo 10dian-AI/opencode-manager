@@ -825,15 +825,15 @@ export async function fetchOpenCodeApiKey(
   // Try multiple patterns to match the API key in the keys page
   // Pattern 1: key: "sk-..." (most common)
   let match = html.match(/key:\s*["']?(sk-[a-zA-Z0-9_-]+)["']?/)
-  if (match) return match[1]
+  if (match) return match[1] ?? null
 
   // Pattern 2: "key":"sk-..." (JSON format)
   match = html.match(/"key"\s*:\s*["']?(sk-[a-zA-Z0-9_-]+)["']?/)
-  if (match) return match[1]
+  if (match) return match[1] ?? null
 
   // Pattern 3: sk- prefix anywhere in hydration data
   match = html.match(/["']?(sk-ant-api03-[a-zA-Z0-9_-]{95,})["']?/)
-  if (match) return match[1]
+  if (match) return match[1] ?? null
 
   return null
 }

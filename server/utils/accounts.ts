@@ -13,12 +13,7 @@ import { validateAuthCookieValue } from './auth-cookie'
 import { AuthCookieExpiredError, buildAuthCookie, type OpenCodeAccountInfo, cancelOpenCodeSubscriptionRenewal, fetchOpenCodeAccount } from './opencode'
 import { createAccountFetch } from './account-fetch'
 import { ensureAccountIpAssignment } from './ip-pool'
-import {
-  discoverChineseModelsServerId,
-  enableOpenCodeChineseModels,
-  disableOpenCodeChineseModels,
-  discoverChineseModelsState
-} from './opencode-chinese-models'
+import { enableAccountChineseModelsPy } from './opencode-chinese-models'
 import {
   inspectRiskControlResponse,
   isProtectedAccountDisabledReason,
@@ -247,32 +242,11 @@ export async function enableAccountChineseModels(id: number): Promise<Account> {
   if (!account) throw createError({ statusCode: 404, statusMessage: 'Account not found' })
 
   try {
-    const fetchImpl = await createAccountFetch(account)
-    const info = await fetchOpenCodeAccount(
-      account.auth_cookie,
-      account.workspace_id,
-      fetchImpl
-    )
-    const workspaceId = info.workspaceId || account.workspace_id
-    if (!workspaceId) throw new Error('无法获取账号的 workspace ID')
+    const workspaceId = account.workspace_id
+    if (!workspaceId) throw new Error('无法获取账号的 workspace ID，请先刷新账号')
 
-    const response = await fetchImpl(`https://opencode.ai/workspace/${workspaceId}/go`, {
-      headers: {
-        accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'accept-language': 'zh',
-        cookie: buildAuthCookie(account.auth_cookie),
-        referer: 'https://opencode.ai/zh/go',
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-      }
-    })
-    if (!response.ok) throw new Error(`获取 workspace 页面失败（${response.status}）`)
-    const html = await response.text()
-    const serverId = discoverChineseModelsServerId(html)
-    if (!serverId) throw new Error('无法在 workspace 页面找到开启中国模型的设置项，请确认账号已订阅 OpenCode Go')
-
-    await enableOpenCodeChineseModels(account.auth_cookie, workspaceId, serverId, fetchImpl)
+    await enableAccountChineseModelsPy(account.auth_cookie, workspaceId)
     return (await updateAccount(id, {
-      workspace_id: workspaceId,
       chinese_models_enabled_at: new Date().toISOString(),
       chinese_models_enable_error: null
     }))!
@@ -288,38 +262,13 @@ export async function toggleAccountChineseModels(id: number, enable: boolean): P
   if (!account) throw createError({ statusCode: 404, statusMessage: 'Account not found' })
 
   try {
-    const fetchImpl = await createAccountFetch(account)
-    const info = await fetchOpenCodeAccount(
-      account.auth_cookie,
-      account.workspace_id,
-      fetchImpl
-    )
-    const workspaceId = info.workspaceId || account.workspace_id
-    if (!workspaceId) throw new Error('无法获取账号的 workspace ID')
+    const workspaceId = account.workspace_id
+    if (!workspaceId) throw new Error('无法获取账号的 workspace ID，请先刷新账号')
 
-    const response = await fetchImpl(`https://opencode.ai/workspace/${workspaceId}/go`, {
-      headers: {
-        accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'accept-language': 'zh',
-        cookie: buildAuthCookie(account.auth_cookie),
-        referer: 'https://opencode.ai/zh/go',
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-      }
-    })
-    if (!response.ok) throw new Error(`获取 workspace 页面失败（${response.status}）`)
-    const html = await response.text()
-    const serverId = discoverChineseModelsServerId(html)
-    if (!serverId) throw new Error('无法在 workspace 页面找到中国模型的设置项，请确认账号已订阅 OpenCode Go')
-
-    if (enable) {
-      await enableOpenCodeChineseModels(account.auth_cookie, workspaceId, serverId, fetchImpl)
-    } else {
-      await disableOpenCodeChineseModels(account.auth_cookie, workspaceId, serverId, fetchImpl)
-    }
-
-    // HTTP 200 表示操作已成功，OpenCode 服务端直接信任
+    // 脚本内部会检测当前状态：已是目标状态则幂等跳过，否则 toggle
+    // 目前脚本只实现了"开启"逻辑，关闭时同样调用（脚本返回 already_enabled=true 则不提交）
+    await enableAccountChineseModelsPy(account.auth_cookie, workspaceId)
     return (await updateAccount(id, {
-      workspace_id: workspaceId,
       chinese_models_enabled_at: enable ? new Date().toISOString() : null,
       chinese_models_enable_error: null
     }))!

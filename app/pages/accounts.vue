@@ -317,7 +317,7 @@ async function onEnableChineseModels(account: Account) {
   try {
     // Toggle: if already enabled, disable it; otherwise enable it
     const enable = !account.chinese_models_enabled_at
-    const result = await $fetch('/api/accounts/toggle-chinese-models', {
+    const result = await $fetch<{ success: boolean; message: string; account: any }>('/api/accounts/toggle-chinese-models', {
       method: 'POST',
       body: {
         account_id: account.id,
@@ -612,17 +612,15 @@ async function onEnableAllChinese() {
 async function onSyncChineseModelsStatus() {
   syncingChineseModelsStatus.value = true
   try {
-    const { data, error } = await useFetch('/api/accounts/sync-chinese-models-status', {
-      method: 'POST'
-    })
-    if (error.value) {
-      throw error.value
-    }
-    await refreshAccountsList()
+    const result = await $fetch<{ total: number; synchronized: number; failed: number }>(
+      '/api/accounts/sync-chinese-models-status',
+      { method: 'POST' }
+    )
+    await Promise.allSettled([fetchAccounts(), fetchStats()])
     toast.add({
-      title: `已同步 ${data.value?.synchronized || 0} 个账号的中国模型状态`,
-      description: data.value?.failed ? `${data.value.failed} 个账号同步失败` : undefined,
-      color: data.value?.failed ? 'warning' : 'success'
+      title: `已同步 ${result.synchronized || 0} 个账号的中国模型状态`,
+      description: result.failed ? `${result.failed} 个账号同步失败` : undefined,
+      color: result.failed ? 'warning' : 'success'
     })
   } catch (e: any) {
     toast.add({ title: e?.data?.statusMessage || e?.message || '同步状态失败', color: 'error' })
