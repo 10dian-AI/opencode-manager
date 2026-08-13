@@ -117,7 +117,7 @@ export interface RiskControlCheckResult {
   message: string | null
 }
 
-export type BulkAccountAction = 'refresh' | 'risk-control-check' | 'enable' | 'disable' | 'enable-chinese-models'
+export type BulkAccountAction = 'refresh' | 'risk-control-check' | 'enable' | 'disable' | 'enable-chinese-models' | 'disable-chinese-models'
 
 export interface BulkAccountActionResult {
   action: BulkAccountAction
@@ -412,6 +412,8 @@ export function useAccounts() {
       if (action === 'risk-control-check') return account.has_upstream_api_key
       if (action === 'enable') return account.status === 'disabled'
       if (action === 'disable') return account.status !== 'disabled'
+      if (action === 'enable-chinese-models') return !account.chinese_models_enabled_at
+      if (action === 'disable-chinese-models') return Boolean(account.chinese_models_enabled_at)
       return true
     })
 
@@ -457,10 +459,11 @@ export function useAccounts() {
         applyAccount(updated)
         return
       }
-      if (action === 'enable-chinese-models') {
+      if (action === 'enable-chinese-models' || action === 'disable-chinese-models') {
+        const enable = action === 'enable-chinese-models'
         const result = await requestFetch<{ success: boolean; account: Account }>(
-          '/api/accounts/enable-chinese-models',
-          { method: 'POST', body: { account_id: account.id } }
+          '/api/accounts/toggle-chinese-models',
+          { method: 'POST', body: { account_id: account.id, enable } }
         )
         updatedAccounts.push(result.account)
         applyAccount(result.account)
