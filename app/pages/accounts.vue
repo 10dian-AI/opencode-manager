@@ -60,6 +60,7 @@ const actionId = ref<number | null>(null)
 const refreshingAll = ref(false)
 const checkingAllRiskControls = ref(false)
 const enablingAllChinese = ref(false)
+const syncingChineseModelsStatus = ref(false)
 const membershipFilter = ref<'all' | 'member' | 'non-member'>('all')
 const riskControlFilter = ref<'all' | 'risk-controlled' | 'not-risk-controlled'>('all')
 const selectedAccountIds = ref<number[]>([])
@@ -314,10 +315,13 @@ async function onEnableChineseModels(account: Account) {
   actionId.value = account.id
   accountAction.value = 'enable-chinese'
   try {
-    const result = await $fetch('/api/accounts/enable-chinese-models', {
+    // Toggle: if already enabled, disable it; otherwise enable it
+    const enable = !account.chinese_models_enabled_at
+    const result = await $fetch('/api/accounts/toggle-chinese-models', {
       method: 'POST',
       body: {
-        account_id: account.id
+        account_id: account.id,
+        enable
       }
     })
     if (result.account) {
@@ -325,12 +329,12 @@ async function onEnableChineseModels(account: Account) {
       if (index >= 0) accounts.value[index] = result.account
     }
     toast.add({
-      title: result.message || '已开启中国模型支持',
+      title: result.message || (enable ? '已开启中国模型支持' : '已关闭中国模型支持'),
       color: 'success'
     })
   } catch (e: any) {
     toast.add({
-      title: e?.data?.statusMessage || '开启中国模型失败',
+      title: e?.data?.statusMessage || '切换中国模型失败',
       color: 'error'
     })
   } finally {
@@ -582,7 +586,7 @@ async function onEnableAllChinese() {
       )
       .map(account => account.id)
     if (!ids.length) {
-      toast.add({ title: '没有需要开启中国模型的账号', color: 'neutral' })
+      toast.add({ title: '所有会员账号已开启中国模型', color: 'neutral' })
       return
     }
     const result = await runAccountBatch(
@@ -602,6 +606,28 @@ async function onEnableAllChinese() {
   } finally {
     enablingAllChinese.value = false
     batchProgress.value = null
+  }
+}
+
+async function onSyncChineseModelsStatus() {
+  syncingChineseModelsStatus.value = true
+  try {
+    const { data, error } = await useFetch('/api/accounts/sync-chinese-models-status', {
+      method: 'POST'
+    })
+    if (error.value) {
+      throw error.value
+    }
+    await refreshAccountsList()
+    toast.add({
+      title: `已同步 ${data.value?.synchronized || 0} 个账号的中国模型状态`,
+      description: data.value?.failed ? `${data.value.failed} 个账号同步失败` : undefined,
+      color: data.value?.failed ? 'warning' : 'success'
+    })
+  } catch (e: any) {
+    toast.add({ title: e?.data?.statusMessage || e?.message || '同步状态失败', color: 'error' })
+  } finally {
+    syncingChineseModelsStatus.value = false
   }
 }
 
@@ -796,6 +822,16 @@ async function exportKeys() {
           @click="onEnableAllChinese"
         >
           批量开启中国模型
+        </UButton>
+        <UButton
+          icon="i-lucide-sync"
+          color="neutral"
+          variant="outline"
+          :loading="syncingChineseModelsStatus"
+          :disabled="Boolean(batchProgress)"
+          @click="onSyncChineseModelsStatus"
+        >
+          同步中国模型状态
         </UButton>
         <UButton
           icon="i-lucide-refresh-cw"
@@ -1133,7 +1169,7 @@ async function exportKeys() {
                     size="xs"
                     :color="account.chinese_models_enabled_at ? 'info' : account.chinese_models_enable_error ? 'warning' : 'neutral'"
                     variant="ghost"
-                    :title="account.chinese_models_enabled_at ? '重新开启中国模型' : '开启中国模型'"
+                    :title="account.chinese_models_enabled_at ? '关闭中国模型' : '开启中国模型'"
                     :loading="actionId === account.id && accountAction === 'enable-chinese'"
                     @click="onEnableChineseModels(account)"
                   />

@@ -15,7 +15,8 @@ import { createAccountFetch } from './account-fetch'
 import { ensureAccountIpAssignment } from './ip-pool'
 import {
   discoverChineseModelsServerId,
-  enableOpenCodeChineseModels
+  enableOpenCodeChineseModels,
+  disableOpenCodeChineseModels
 } from './opencode-chinese-models'
 import {
   inspectRiskControlResponse,
@@ -281,6 +282,52 @@ export async function enableAccountChineseModels(id: number): Promise<Account> {
   }
 }
 
+export async function toggleAccountChineseModels(id: number, enable: boolean): Promise<Account> {
+  const account = await ensureAccountIpAssignment(id)
+  if (!account) throw createError({ statusCode: 404, statusMessage: 'Account not found' })
+
+  try {
+    const fetchImpl = await createAccountFetch(account)
+    const info = await fetchOpenCodeAccount(
+      account.auth_cookie,
+      account.workspace_id,
+      fetchImpl
+    )
+    const workspaceId = info.workspaceId || account.workspace_id
+    if (!workspaceId) throw new Error('无法获取账号的 workspace ID')
+
+    const response = await fetchImpl(`https://opencode.ai/workspace/${workspaceId}/go`, {
+      headers: {
+        accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'accept-language': 'zh',
+        cookie: buildAuthCookie(account.auth_cookie),
+        referer: 'https://opencode.ai/zh/go',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+      }
+    })
+    if (!response.ok) throw new Error(`获取 workspace 页面失败（${response.status}）`)
+    const html = await response.text()
+    const serverId = discoverChineseModelsServerId(html)
+    if (!serverId) throw new Error('无法在 workspace 页面找到中国模型的设置项，请确认账号已订阅 OpenCode Go')
+
+    if (enable) {
+      await enableOpenCodeChineseModels(account.auth_cookie, workspaceId, serverId, fetchImpl)
+    } else {
+      await disableOpenCodeChineseModels(account.auth_cookie, workspaceId, serverId, fetchImpl)
+    }
+
+    return (await updateAccount(id, {
+      workspace_id: workspaceId,
+      chinese_models_enabled_at: enable ? new Date().toISOString() : null,
+      chinese_models_enable_error: null
+    }))!
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    await updateAccount(id, { chinese_models_enable_error: message }).catch(() => {})
+    throw createError({ statusCode: 502, statusMessage: message })
+  }
+}
+
 async function autoCancelSubscriptionRenewal(accounts: Account[]) {
   await mapConcurrent(accounts, REFRESH_CONCURRENCY, async account => {
     try {
@@ -388,6 +435,12 @@ export function refreshAccount(id: number): Promise<Account> {
     .then(async account => {
       if (account.status === 'error') {
         progress.fail(account.last_error || '账号刷新失败')
+        // Immediately schedule another refresh attempt — no delay.
+        // Fire-and-forget; the retry result updates the poll schedule itself.
+        const settings = await getAccountRefreshSettings()
+        if (settings.auto_refresh_errors && account.disabled_reason !== 'auth_expired' && account.disabled_reason !== 'manual') {
+          void refreshAccount(id)
+        }
       } else {
         progress.complete()
       }
@@ -596,6 +649,9 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
       subscription_status: info.subscriptionStatus ?? currentAccount.subscription_status,
       ...subscriptionUpdate,
       upstream_api_key: upstreamApiKey,
+      ...(info.chineseModelsEnabled !== null && info.chineseModelsEnabled !== undefined
+        ? { chinese_models_enabled_at: info.chineseModelsEnabled ? (currentAccount.chinese_models_enabled_at || now.toISOString()) : null }
+        : {}),
       status,
       disabled_reason: disabledReason,
       auto_enable_at: disabledReason?.startsWith('quota:') ? quota.autoEnableAt : null,

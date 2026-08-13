@@ -92,4 +92,66 @@ export async function enableOpenCodeChineseModels(
       `Failed to enable Chinese models (HTTP ${response.status}${detail ? `: ${detail}` : ''})`
     )
   }
+
+  // Verify the change by parsing the response
+  const responseText = await response.text()
+  const regionMatch = responseText.match(/region["\s:]+\[([^\]]+)\]/)
+  if (regionMatch) {
+    const regions = regionMatch[1]!
+    const hasCn = regions.includes('"cn"') || regions.includes("'cn'")
+    if (!hasCn) {
+      throw new Error('中国模型开启请求已发送，但服务器返回的 region 数组中未包含 "cn"')
+    }
+  }
+}
+
+export async function disableOpenCodeChineseModels(
+  authCookie: string,
+  workspaceId: string,
+  serverId: string,
+  fetchImpl: typeof fetch = fetch
+): Promise<void> {
+  const cookie = buildAuthCookie(authCookie)
+
+  const body = new URLSearchParams({
+    workspaceID: workspaceId,
+    useChinaProviders: 'false'
+  })
+
+  const response = await fetchWithDeadline(
+    fetchImpl,
+    `${BASE}/_server`,
+    {
+      method: 'POST',
+      headers: {
+        accept: '*/*',
+        'content-type': 'application/x-www-form-urlencoded',
+        'x-server-id': serverId,
+        'x-server-instance': 'server-fn:0',
+        'x-single-flight': 'true',
+        cookie,
+        referer: `${BASE}/workspace/${workspaceId}/go`,
+        'user-agent': UA
+      },
+      body: body.toString()
+    }
+  )
+
+  if (!response.ok) {
+    const detail = (await response.text().catch(() => '')).slice(0, 300)
+    throw new Error(
+      `Failed to disable Chinese models (HTTP ${response.status}${detail ? `: ${detail}` : ''})`
+    )
+  }
+
+  // Verify the change by parsing the response
+  const responseText = await response.text()
+  const regionMatch = responseText.match(/region["\s:]+\[([^\]]+)\]/)
+  if (regionMatch) {
+    const regions = regionMatch[1]!
+    const hasCn = regions.includes('"cn"') || regions.includes("'cn'")
+    if (hasCn) {
+      throw new Error('中国模型关闭请求已发送，但服务器返回的 region 数组中仍包含 "cn"')
+    }
+  }
 }
