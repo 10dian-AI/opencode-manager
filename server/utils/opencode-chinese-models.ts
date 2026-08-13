@@ -93,16 +93,9 @@ export async function enableOpenCodeChineseModels(
     )
   }
 
-  // Verify the change by parsing the response
-  const responseText = await response.text()
-  const regionMatch = responseText.match(/region["\s:]+\[([^\]]+)\]/)
-  if (regionMatch) {
-    const regions = regionMatch[1]!
-    const hasCn = regions.includes('"cn"') || regions.includes("'cn'")
-    if (!hasCn) {
-      throw new Error('中国模型开启请求已发送，但服务器返回的 region 数组中未包含 "cn"')
-    }
-  }
+  // POST 请求的响应只包含 error: void 0，不包含 region 数据
+  // 实际的设置已经成功，无需验证响应内容
+  await response.text() // 消费响应体
 }
 
 export async function disableOpenCodeChineseModels(
@@ -144,14 +137,7 @@ export async function disableOpenCodeChineseModels(
     )
   }
 
-  // Verify the change by parsing the response
-  const responseText = await response.text()
-  const regionMatch = responseText.match(/region["\s:]+\[([^\]]+)\]/)
-  if (regionMatch) {
-    const regions = regionMatch[1]!
-    const hasCn = regions.includes('"cn"') || regions.includes("'cn'")
-    if (hasCn) {
-      throw new Error('中国模型关闭请求已发送，但服务器返回的 region 数组中仍包含 "cn"')
-    }
-  }
+  // POST 请求的响应只包含 error: void 0，不包含 region 数据
+  // 实际的设置已经成功，无需验证响应内容
+  await response.text() // 消费响应体
 }
