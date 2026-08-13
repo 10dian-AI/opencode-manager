@@ -141,3 +141,18 @@ export async function disableOpenCodeChineseModels(
   // 实际的设置已经成功，无需验证响应内容
   await response.text() // 消费响应体
 }
+
+/**
+ * Parse the current Chinese models state from the workspace page HTML.
+ * Returns true if enabled, false if disabled.
+ *
+ * Example from HTML:
+ *   region: ["us", "eu", "sg", "cn"]  → enabled (contains "cn")
+ *   region: ["us", "eu", "sg"]        → disabled (no "cn")
+ */
+export function discoverChineseModelsState(html: string): boolean {
+  const regionMatch = html.match(/region:\s*\[([^\]]+)\]/)
+  if (!regionMatch) return false
+  const regions = regionMatch[1]!
+  return regions.includes('"cn"') || regions.includes("'cn'")
+}

@@ -16,7 +16,8 @@ import { ensureAccountIpAssignment } from './ip-pool'
 import {
   discoverChineseModelsServerId,
   enableOpenCodeChineseModels,
-  disableOpenCodeChineseModels
+  disableOpenCodeChineseModels,
+  discoverChineseModelsState
 } from './opencode-chinese-models'
 import {
   inspectRiskControlResponse,
