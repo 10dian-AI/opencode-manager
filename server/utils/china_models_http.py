@@ -7,6 +7,7 @@ import http.cookiejar
 import json
 import os
 import re
+import ssl
 import sys
 import time
 import urllib.error
@@ -90,7 +91,13 @@ def build_opener(auth_value, go_url):
         rest={"HttpOnly": None},
         rfc2109=False,
     ))
-    return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    return urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(jar),
+        urllib.request.HTTPSHandler(context=context),
+    )
 
 
 def fetch_china_model_form(opener, go_url, timeout):
@@ -120,8 +127,8 @@ def form_values(form):
     }
 
 
-def enable_china_models_http(cookie_data, timeout=30):
-    """幂等开启：已开启则不提交，关闭时只提交一次并重新 GET 校验。"""
+def set_china_models_http(cookie_data, enabled=True, timeout=30):
+    """把国内模型设置为目标状态；已是目标状态时不提交。"""
     auth_value = auth_cookie_value(cookie_data)
     go_url = workspace_go_url(cookie_data)
     if not auth_value or not go_url:
@@ -136,13 +143,16 @@ def enable_china_models_http(cookie_data, timeout=30):
 
         values = form_values(form)
         current_value = str(values.get("useChinaProviders", "")).lower()
-        if current_value == "true":
+        target_value = "true" if enabled else "false"
+        if current_value == target_value:
             return {
                 "success": True,
-                "already_enabled": True,
-                "message": "国内模型已经开启",
+                "enabled": enabled,
+                "already_in_target": True,
+                "already_enabled": enabled,
+                "message": f"国内模型已经{'开启' if enabled else '关闭'}",
             }
-        if current_value != "false":
+        if current_value not in {"true", "false"}:
             return {"success": False, "message": "无法识别国内模型当前状态"}
 
         action_query = urllib.parse.parse_qs(
@@ -157,7 +167,7 @@ def enable_china_models_http(cookie_data, timeout=30):
         origin = f"{origin_parts.scheme}://{origin_parts.netloc}"
         payload = urllib.parse.urlencode({
             "workspaceID": workspace_id,
-            # 此动作接收当前状态并执行 toggle，所以这里只提交已确认的 false。
+            # 此动作接收当前状态并执行 toggle，而不是接收目标状态。
             "useChinaProviders": current_value,
         }).encode("utf-8")
         request = urllib.request.Request(
@@ -185,23 +195,42 @@ def enable_china_models_http(cookie_data, timeout=30):
             form = fetch_china_model_form(opener, go_url, request_timeout)
             if form is not None:
                 values = form_values(form)
-                if str(values.get("useChinaProviders", "")).lower() == "true":
-                    return {"success": True, "message": "已通过 HTTP 开启国内模型"}
+                if str(values.get("useChinaProviders", "")).lower() == target_value:
+                    return {
+                        "success": True,
+                        "enabled": enabled,
+                        "already_in_target": False,
+                        "already_enabled": enabled,
+                        "message": f"已通过 HTTP {'开启' if enabled else '关闭'}国内模型",
+                    }
             time.sleep(1)
     except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
         return {"success": False, "message": f"HTTP 操作失败: {exc}"}
 
-    return {"success": False, "message": "提交后未确认国内模型已开启"}
+    return {
+        "success": False,
+        "message": f"提交后未确认国内模型已{'开启' if enabled else '关闭'}",
+    }
+
+
+def enable_china_models_http(cookie_data, timeout=30):
+    """兼容原有调用：幂等开启国内模型。"""
+    return set_china_models_http(cookie_data, enabled=True, timeout=timeout)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="用 Cookie 通过 HTTP 开启国内模型")
+    parser = argparse.ArgumentParser(description="用 Cookie 通过 HTTP 开启或关闭国内模型")
     parser.add_argument("--username", help="读取 cookies/auth_cookies_<用户名>.json")
     parser.add_argument("--cookie-file", help="直接指定 Cookie JSON 文件")
     parser.add_argument(
         "--stdin",
         action="store_true",
         help="从 stdin 读取 JSON 格式的 cookie_data，结果以 JSON 输出到 stdout",
+    )
+    parser.add_argument(
+        "--disable",
+        action="store_true",
+        help="将国内模型关闭；默认行为是开启",
     )
     parser.add_argument("--timeout", type=int, default=30, help="等待确认秒数，默认 30")
     args = parser.parse_args()
@@ -217,7 +246,11 @@ def main():
                 )
             )
             return 1
-        result = enable_china_models_http(cookie_data, timeout=args.timeout)
+        result = set_china_models_http(
+            cookie_data,
+            enabled=not args.disable,
+            timeout=args.timeout,
+        )
         print(json.dumps(result, ensure_ascii=False))
         return 0 if result.get("success") else 1
 
@@ -237,7 +270,11 @@ def main():
         print(f"[失败] Cookie 文件读取失败: {exc}")
         return 1
 
-    result = enable_china_models_http(cookie_data, timeout=args.timeout)
+    result = set_china_models_http(
+        cookie_data,
+        enabled=not args.disable,
+        timeout=args.timeout,
+    )
     label = "成功" if result.get("success") else "失败"
     print(f"[{label}] {result.get('message', '未知结果')}")
     return 0 if result.get("success") else 1

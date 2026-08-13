@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 const PYTHON_SCRIPT = resolve(
@@ -15,7 +16,6 @@ const SCRIPT_CANDIDATES = [
 ]
 
 function findScript(): string {
-  const { existsSync } = require('node:fs')
   for (const candidate of SCRIPT_CANDIDATES) {
     if (existsSync(candidate)) return candidate
   }
@@ -24,6 +24,8 @@ function findScript(): string {
 
 interface PythonResult {
   success: boolean
+  enabled?: boolean
+  already_in_target?: boolean
   already_enabled?: boolean
   message: string
 }
@@ -35,6 +37,7 @@ interface PythonResult {
 function callPythonScript(
   authCookie: string,
   workspaceUrl: string,
+  enable: boolean,
   timeoutMs = 60_000
 ): Promise<PythonResult> {
   return new Promise((resolve_fn, reject) => {
@@ -44,7 +47,9 @@ function callPythonScript(
     }
 
     const script = findScript()
-    const proc = spawn('python3', [script, '--stdin'], {
+    const args = [script, '--stdin']
+    if (!enable) args.push('--disable')
+    const proc = spawn('python3', args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: timeoutMs
     })
@@ -98,15 +103,15 @@ export async function toggleChineseModels(
   fetchImpl?: typeof fetch
 ): Promise<void> {
   const workspaceUrl = `https://opencode.ai/workspace/${workspaceId}/go`
-  const result = await callPythonScript(authCookie, workspaceUrl)
+  const result = await callPythonScript(authCookie, workspaceUrl, enable)
 
   if (!result.success) {
     throw new Error(result.message || '中国模型操作失败')
   }
 
-  // If already in desired state, that is success
-  if (result.already_enabled && enable) return
-  if (!result.already_enabled && !enable) return
+  if (result.enabled !== undefined && result.enabled !== enable) {
+    throw new Error('中国模型状态与目标状态不一致')
+  }
 }
 
 // Keep these exports so bulk-action code still compiles
@@ -114,9 +119,5 @@ export async function enableAccountChineseModelsPy(
   authCookie: string,
   workspaceId: string
 ): Promise<void> {
-  const workspaceUrl = `https://opencode.ai/workspace/${workspaceId}/go`
-  const result = await callPythonScript(authCookie, workspaceUrl)
-  if (!result.success) {
-    throw new Error(result.message || '中国模型开启失败')
-  }
+  await toggleChineseModels(authCookie, workspaceId, true)
 }

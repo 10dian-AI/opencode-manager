@@ -13,7 +13,7 @@ import { validateAuthCookieValue } from './auth-cookie'
 import { AuthCookieExpiredError, buildAuthCookie, type OpenCodeAccountInfo, cancelOpenCodeSubscriptionRenewal, fetchOpenCodeAccount } from './opencode'
 import { createAccountFetch } from './account-fetch'
 import { ensureAccountIpAssignment } from './ip-pool'
-import { enableAccountChineseModelsPy } from './opencode-chinese-models'
+import { toggleChineseModels } from './opencode-chinese-models'
 import {
   inspectRiskControlResponse,
   isProtectedAccountDisabledReason,
@@ -245,7 +245,7 @@ export async function enableAccountChineseModels(id: number): Promise<Account> {
     const workspaceId = account.workspace_id
     if (!workspaceId) throw new Error('无法获取账号的 workspace ID，请先刷新账号')
 
-    await enableAccountChineseModelsPy(account.auth_cookie, workspaceId)
+    await toggleChineseModels(account.auth_cookie, workspaceId, true)
     return (await updateAccount(id, {
       chinese_models_enabled_at: new Date().toISOString(),
       chinese_models_enable_error: null
@@ -265,11 +265,8 @@ export async function toggleAccountChineseModels(id: number, enable: boolean): P
     const workspaceId = account.workspace_id
     if (!workspaceId) throw new Error('无法获取账号的 workspace ID，请先刷新账号')
 
-    if (enable) {
-      // 脚本会检测当前状态，已开启则幂等跳过，未开启则 POST toggle
-      await enableAccountChineseModelsPy(account.auth_cookie, workspaceId)
-    }
-    // 关闭时直接更新数据库状态（脚本目前只实现了开启，关闭由用户在官网手动操作）
+    // 脚本先读取官网当前状态，只有与目标状态不一致时才提交 toggle。
+    await toggleChineseModels(account.auth_cookie, workspaceId, enable)
     return (await updateAccount(id, {
       chinese_models_enabled_at: enable ? new Date().toISOString() : null,
       chinese_models_enable_error: null

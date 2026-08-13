@@ -60,6 +60,7 @@ const actionId = ref<number | null>(null)
 const refreshingAll = ref(false)
 const checkingAllRiskControls = ref(false)
 const enablingAllChinese = ref(false)
+const disablingAllChinese = ref(false)
 const syncingChineseModelsStatus = ref(false)
 const membershipFilter = ref<'all' | 'member' | 'non-member'>('all')
 const riskControlFilter = ref<'all' | 'risk-controlled' | 'not-risk-controlled'>('all')
@@ -609,6 +610,40 @@ async function onEnableAllChinese() {
   }
 }
 
+async function onDisableAllChinese() {
+  disablingAllChinese.value = true
+  try {
+    const ids = accounts.value
+      .filter(account =>
+        account.status === 'active' &&
+        account.disabled_reason !== 'manual' &&
+        Boolean(account.chinese_models_enabled_at)
+      )
+      .map(account => account.id)
+    if (!ids.length) {
+      toast.add({ title: '没有需要关闭中国模型的账号', color: 'neutral' })
+      return
+    }
+    const result = await runAccountBatch(
+      ids,
+      'disable-chinese-models',
+      progress => {
+        batchProgress.value = { label: '批量关闭中国模型', ...progress }
+      }
+    )
+    toast.add({
+      title: `已成功关闭 ${result.succeeded} 个账号的中国模型`,
+      description: result.failed ? `${result.failed} 个账号关闭失败` : undefined,
+      color: result.failed ? 'warning' : 'success'
+    })
+  } catch (e: any) {
+    toast.add({ title: e?.data?.statusMessage || e?.message || '批量关闭失败', color: 'error' })
+  } finally {
+    disablingAllChinese.value = false
+    batchProgress.value = null
+  }
+}
+
 async function onSyncChineseModelsStatus() {
   syncingChineseModelsStatus.value = true
   try {
@@ -655,7 +690,8 @@ async function executeBulkAction(action: AccountBatchAction, ids: number[]) {
       enable: '启用',
       disable: '禁用',
       delete: '删除',
-      'enable-chinese-models': '开启中国模型'
+      'enable-chinese-models': '开启中国模型',
+      'disable-chinese-models': '关闭中国模型'
     }
     const result = await runAccountBatch(
       ids,
@@ -822,6 +858,16 @@ async function exportKeys() {
           批量开启中国模型
         </UButton>
         <UButton
+          icon="i-lucide-globe-2"
+          color="neutral"
+          variant="outline"
+          :loading="disablingAllChinese"
+          :disabled="Boolean(batchProgress)"
+          @click="onDisableAllChinese"
+        >
+          批量关闭中国模型
+        </UButton>
+        <UButton
           icon="i-lucide-sync"
           color="neutral"
           variant="outline"
@@ -986,6 +1032,28 @@ async function exportKeys() {
           @click="onBulkAction('disable')"
         >
           禁用
+        </UButton>
+        <UButton
+          icon="i-lucide-globe"
+          size="sm"
+          color="neutral"
+          variant="ghost"
+          :loading="bulkAction === 'enable-chinese-models'"
+          :disabled="Boolean(bulkAction) || Boolean(batchProgress)"
+          @click="onBulkAction('enable-chinese-models')"
+        >
+          开国模
+        </UButton>
+        <UButton
+          icon="i-lucide-globe-2"
+          size="sm"
+          color="neutral"
+          variant="ghost"
+          :loading="bulkAction === 'disable-chinese-models'"
+          :disabled="Boolean(bulkAction) || Boolean(batchProgress)"
+          @click="onBulkAction('disable-chinese-models')"
+        >
+          关国模
         </UButton>
         <UButton
           icon="i-lucide-trash-2"

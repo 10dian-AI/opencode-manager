@@ -1,7 +1,7 @@
-import { enableAccountChineseModels } from '../../utils/accounts'
+import { toggleAccountChineseModels } from '../../utils/accounts'
 import type { Account } from '../../utils/db'
 
-type BulkAccountAction = 'refresh' | 'risk-control-check' | 'enable' | 'disable' | 'enable-chinese-models'
+type BulkAccountAction = 'refresh' | 'risk-control-check' | 'enable' | 'disable' | 'enable-chinese-models' | 'disable-chinese-models'
 
 export default defineEventHandler(async (event) => {
   await requireAuth(event)
@@ -65,9 +65,15 @@ export default defineEventHandler(async (event) => {
     }
   }
 
-  if (action === 'enable-chinese-models') {
+  if (action === 'enable-chinese-models' || action === 'disable-chinese-models') {
+    const enable = action === 'enable-chinese-models'
+    const eligibleIds = accounts
+      .filter(account => enable
+        ? !account?.chinese_models_enabled_at
+        : Boolean(account?.chinese_models_enabled_at))
+      .map(account => account!.id)
     const results = await Promise.allSettled(
-      ids.map(id => enableAccountChineseModels(id))
+      eligibleIds.map(id => toggleAccountChineseModels(id, enable))
     )
     const succeeded = results.filter(r => r.status === 'fulfilled').length
     const failed = results.filter(r => r.status === 'rejected').length
@@ -77,7 +83,7 @@ export default defineEventHandler(async (event) => {
     return {
       action,
       processed: succeeded,
-      skipped: 0,
+      skipped: ids.length - eligibleIds.length,
       blocked: 0,
       failed,
       accounts: updatedAccounts
@@ -110,7 +116,8 @@ function parseBulkAction(value: unknown): BulkAccountAction {
     value !== 'risk-control-check' &&
     value !== 'enable' &&
     value !== 'disable' &&
-    value !== 'enable-chinese-models'
+    value !== 'enable-chinese-models' &&
+    value !== 'disable-chinese-models'
   ) {
     throw createError({ statusCode: 400, statusMessage: 'Invalid bulk action' })
   }
