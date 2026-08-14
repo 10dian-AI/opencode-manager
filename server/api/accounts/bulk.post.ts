@@ -1,7 +1,7 @@
-import { toggleAccountChineseModels } from '../../utils/accounts'
+import { toggleAccountChineseModels, cancelAccountRenewal } from '../../utils/accounts'
 import type { Account } from '../../utils/db'
 
-type BulkAccountAction = 'refresh' | 'risk-control-check' | 'enable' | 'disable' | 'enable-chinese-models' | 'disable-chinese-models'
+type BulkAccountAction = 'refresh' | 'risk-control-check' | 'enable' | 'disable' | 'enable-chinese-models' | 'disable-chinese-models' | 'cancel-renewal'
 
 export default defineEventHandler(async (event) => {
   await requireAuth(event)
@@ -90,6 +90,32 @@ export default defineEventHandler(async (event) => {
     }
   }
 
+  if (action === 'cancel-renewal') {
+    const eligibleIds = accounts
+      .filter(account =>
+        account?.status === 'active' &&
+        account?.subscription_status === 'active' &&
+        !account?.subscription_cancelled_at
+      )
+      .map(account => account!.id)
+    const results = await Promise.allSettled(
+      eligibleIds.map(id => cancelAccountRenewal(id))
+    )
+    const succeeded = results.filter(r => r.status === 'fulfilled').length
+    const failed = results.filter(r => r.status === 'rejected').length
+    const updatedAccounts = results
+      .filter((r): r is PromiseFulfilledResult<{ account: Account; alreadyCancelled: boolean; currentPeriodEnd: string | null }> => r.status === 'fulfilled')
+      .map(r => toPublicAccount(r.value.account))
+    return {
+      action,
+      processed: succeeded,
+      skipped: ids.length - eligibleIds.length,
+      blocked: 0,
+      failed,
+      accounts: updatedAccounts
+    }
+  }
+
   const updated = await refreshAccountsByIds(ids)
   return {
     action,
@@ -117,7 +143,8 @@ function parseBulkAction(value: unknown): BulkAccountAction {
     value !== 'enable' &&
     value !== 'disable' &&
     value !== 'enable-chinese-models' &&
-    value !== 'disable-chinese-models'
+    value !== 'disable-chinese-models' &&
+    value !== 'cancel-renewal'
   ) {
     throw createError({ statusCode: 400, statusMessage: 'Invalid bulk action' })
   }

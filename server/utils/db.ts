@@ -333,6 +333,24 @@ const SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_call_logs_status_code ON call_logs(status_code);
   CREATE INDEX IF NOT EXISTS idx_auth_login_attempts_blocked_until
     ON auth_login_attempts(blocked_until);
+
+  CREATE TABLE IF NOT EXISTS operation_logs (
+    id BIGSERIAL PRIMARY KEY,
+    operation TEXT NOT NULL,
+    trigger_type TEXT NOT NULL,
+    account_id BIGINT,
+    account_ids TEXT,
+    status TEXT NOT NULL,
+    detail TEXT,
+    error_message TEXT,
+    blocked_at TEXT,
+    duration_ms INTEGER,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_operation_logs_created_at ON operation_logs(created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_operation_logs_operation ON operation_logs(operation);
+  CREATE INDEX IF NOT EXISTS idx_operation_logs_status ON operation_logs(status);
 `
 
 async function initializeSchema(client: SqlClient) {

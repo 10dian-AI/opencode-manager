@@ -2,14 +2,8 @@ import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-const PYTHON_SCRIPT = resolve(
-  process.argv[1] ? process.argv[1] : process.cwd(),
-  '../utils/china_models_http.py'
-)
-
-// Fallback paths for different environments
+// Candidate paths ordered by reliability (process.argv[1] is unreliable in nitro bundles)
 const SCRIPT_CANDIDATES = [
-  PYTHON_SCRIPT,
   resolve(process.cwd(), 'server/utils/china_models_http.py'),
   resolve(process.cwd(), 'utils/china_models_http.py'),
   '/app/server/utils/china_models_http.py'
@@ -59,6 +53,9 @@ function callPythonScript(
 
     proc.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
     proc.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+    // Suppress write errors on stdin — if the process fails to start, writing
+    // to its stdin emits 'error' on the stream, which would crash Node.js.
+    proc.stdin.on('error', () => {})
 
     proc.on('error', (err) => {
       reject(new Error(`无法启动 Python 脚本: ${err.message}`))

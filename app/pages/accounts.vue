@@ -62,6 +62,7 @@ const checkingAllRiskControls = ref(false)
 const enablingAllChinese = ref(false)
 const disablingAllChinese = ref(false)
 const syncingChineseModelsStatus = ref(false)
+const cancellingAllRenewals = ref(false)
 const membershipFilter = ref<'all' | 'member' | 'non-member'>('all')
 const riskControlFilter = ref<'all' | 'risk-controlled' | 'not-risk-controlled'>('all')
 const selectedAccountIds = ref<number[]>([])
@@ -73,6 +74,7 @@ const deleteDialogOpen = ref(false)
 const deleteConfirmLoading = ref(false)
 const autoRefreshSaving = ref(false)
 let statusSyncTimer: ReturnType<typeof setInterval> | null = null
+let statusSyncLastFired = 0
 
 const filteredAccounts = computed(() => {
   return accounts.value.filter((account) => {
@@ -94,6 +96,13 @@ const nonMemberCount = computed(() =>
 )
 const riskControlledCount = computed(() =>
   accounts.value.filter(account => account.disabled_reason === 'risk_control').length
+)
+const activeSubscriptionsCount = computed(() =>
+  accounts.value.filter(account =>
+    account.status === 'active' &&
+    account.subscription_status === 'active' &&
+    !account.subscription_cancelled_at
+  ).length
 )
 
 function accountDisplayLabel(id: number) {
@@ -139,9 +148,13 @@ watch(
 onMounted(() => {
   void Promise.allSettled([fetchAccounts(), fetchStats(), fetchAccountRefreshSettings()])
   statusSyncTimer = setInterval(() => {
+    const interval = batchProgress.value || singleRefreshProgress.value ? 10_000 : 60_000
+    if (!statusSyncLastFired) statusSyncLastFired = Date.now()
+    if (Date.now() - statusSyncLastFired < interval) return
+    statusSyncLastFired = Date.now()
     if (loading.value || batchProgress.value || singleRefreshProgress.value) return
     void Promise.allSettled([fetchAccounts(true), fetchStats()])
-  }, 30_000)
+  }, 5_000)
 })
 
 onBeforeUnmount(() => {
@@ -315,10 +328,11 @@ async function onCancelRenewal() {
 async function onEnableChineseModels(account: Account) {
   actionId.value = account.id
   accountAction.value = 'enable-chinese'
+  const rf = useRequestFetch()
   try {
     // Toggle: if already enabled, disable it; otherwise enable it
     const enable = !account.chinese_models_enabled_at
-    const result = await $fetch<{ success: boolean; message: string; account: any }>('/api/accounts/toggle-chinese-models', {
+    const result = await rf<{ success: boolean; message: string; account: Account }>('/api/accounts/toggle-chinese-models', {
       method: 'POST',
       body: {
         account_id: account.id,
@@ -664,6 +678,40 @@ async function onSyncChineseModelsStatus() {
   }
 }
 
+async function onCancelAllRenewals() {
+  cancellingAllRenewals.value = true
+  try {
+    const ids = accounts.value
+      .filter(account =>
+        account.status === 'active' &&
+        account.subscription_status === 'active' &&
+        !account.subscription_cancelled_at
+      )
+      .map(account => account.id)
+    if (!ids.length) {
+      toast.add({ title: '没有需要取消自动续费的账号', color: 'neutral' })
+      return
+    }
+    const result = await runAccountBatch(
+      ids,
+      'cancel-renewal',
+      progress => {
+        batchProgress.value = { label: '批量取消自动续费', ...progress }
+      }
+    )
+    toast.add({
+      title: `已成功取消 ${result.succeeded} 个账号的自动续费`,
+      description: result.failed ? `${result.failed} 个账号操作失败` : undefined,
+      color: result.failed ? 'warning' : 'success'
+    })
+  } catch (e: any) {
+    toast.add({ title: e?.data?.statusMessage || e?.message || '批量取消续费失败', color: 'error' })
+  } finally {
+    cancellingAllRenewals.value = false
+    batchProgress.value = null
+  }
+}
+
 function onDeleteNonMembers() {
   if (!nonMemberCount.value) return
   deleteIntent.value = { kind: 'non-members', count: nonMemberCount.value }
@@ -691,7 +739,8 @@ async function executeBulkAction(action: AccountBatchAction, ids: number[]) {
       disable: '禁用',
       delete: '删除',
       'enable-chinese-models': '开启中国模型',
-      'disable-chinese-models': '关闭中国模型'
+      'disable-chinese-models': '关闭中国模型',
+      'cancel-renewal': '取消自动续费'
     }
     const result = await runAccountBatch(
       ids,
@@ -830,24 +879,6 @@ async function exportKeys() {
           />
         </div>
         <UButton
-          icon="i-lucide-download"
-          color="neutral"
-          variant="outline"
-          @click="exportKeys"
-        >
-          导出API Key
-        </UButton>
-        <UButton
-          icon="i-lucide-shield-check"
-          color="neutral"
-          variant="outline"
-          :loading="checkingAllRiskControls"
-          :disabled="Boolean(batchProgress)"
-          @click="onCheckAllRiskControls"
-        >
-          风控检测
-        </UButton>
-        <UButton
           icon="i-lucide-globe"
           color="neutral"
           variant="outline"
@@ -855,27 +886,25 @@ async function exportKeys() {
           :disabled="Boolean(batchProgress)"
           @click="onEnableAllChinese"
         >
-          批量开启中国模型
+          开启全部中国模型
         </UButton>
         <UButton
-          icon="i-lucide-globe-2"
+          icon="i-lucide-ban"
           color="neutral"
           variant="outline"
-          :loading="disablingAllChinese"
-          :disabled="Boolean(batchProgress)"
-          @click="onDisableAllChinese"
+          :loading="cancellingAllRenewals"
+          :disabled="!activeSubscriptionsCount || Boolean(batchProgress)"
+          @click="onCancelAllRenewals"
         >
-          批量关闭中国模型
+          取消所有自动续费
         </UButton>
         <UButton
-          icon="i-lucide-sync"
+          icon="i-lucide-download"
           color="neutral"
           variant="outline"
-          :loading="syncingChineseModelsStatus"
-          :disabled="Boolean(batchProgress)"
-          @click="onSyncChineseModelsStatus"
+          @click="exportKeys"
         >
-          同步中国模型状态
+          导出 API Key
         </UButton>
         <UButton
           icon="i-lucide-refresh-cw"
@@ -895,7 +924,7 @@ async function exportKeys() {
 
     <div
       v-if="batchProgress || singleRefreshProgress"
-      class="rounded-lg border border-primary/30 bg-primary/5 px-4 py-3"
+      class="ocm-progress-shimmer rounded-lg border border-primary/30 bg-primary/5 px-4 py-3"
       aria-live="polite"
     >
       <div class="mb-2 flex flex-wrap items-center justify-between gap-2 text-sm">

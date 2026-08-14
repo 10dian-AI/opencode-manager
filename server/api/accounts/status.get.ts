@@ -22,18 +22,23 @@ export default defineEventHandler(async (event) => {
         // Calculate remaining quota (minimum of 5h and weekly limits)
         let remainingQuota = null
         if (isActive) {
-          const rollingLimit = 25 // 5h limit in dollars
-          const rollingUsage = account.rolling_usage || 0
-          const rollingRemaining = Math.max(0, rollingLimit - rollingUsage)
+          const rollingResetSec = account.rolling_reset_sec
+          const rollingLimit = rollingResetSec != null ? rollingResetSec / 3600 * 5 : null
+          const rollingRemaining = rollingLimit != null
+            ? Math.max(0, rollingLimit - (account.rolling_usage || 0))
+            : null
 
-          const weeklyLimit = account.weekly_usage !== null ? 100 : null // Assuming $100 weekly limit
-          const weeklyRemaining = weeklyLimit !== null
+          const weeklyResetSec = account.weekly_reset_sec
+          const weeklyLimit = weeklyResetSec != null ? weeklyResetSec / 3600 * 30 : null
+          const weeklyRemaining = weeklyLimit != null
             ? Math.max(0, weeklyLimit - (account.weekly_usage || 0))
             : null
 
-          remainingQuota = weeklyRemaining !== null
-            ? Math.min(rollingRemaining, weeklyRemaining)
-            : rollingRemaining
+          if (rollingRemaining != null && weeklyRemaining != null) {
+            remainingQuota = Math.min(rollingRemaining, weeklyRemaining)
+          } else {
+            remainingQuota = rollingRemaining ?? weeklyRemaining
+          }
         }
 
         return {

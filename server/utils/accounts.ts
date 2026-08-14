@@ -14,6 +14,7 @@ import { AuthCookieExpiredError, buildAuthCookie, type OpenCodeAccountInfo, canc
 import { createAccountFetch } from './account-fetch'
 import { ensureAccountIpAssignment } from './ip-pool'
 import { toggleChineseModels } from './opencode-chinese-models'
+import { logOperation } from './operation-log'
 import {
   inspectRiskControlResponse,
   isProtectedAccountDisabledReason,
@@ -37,7 +38,7 @@ let accountPollScheduleHydrated = false
 const REFRESH_CONCURRENCY = 4
 const RISK_CONTROL_CHECK_MODEL = process.env.RISK_CONTROL_CHECK_MODEL || 'glm-5.2'
 const AUTO_APPLY_REFERRAL_REWARDS = process.env.AUTO_APPLY_REFERRAL_REWARDS === 'true'
-const AUTO_CANCEL_SUBSCRIPTION_RENEWAL = process.env.AUTO_CANCEL_SUBSCRIPTION_RENEWAL === 'true'
+const AUTO_CANCEL_SUBSCRIPTION_RENEWAL = process.env.AUTO_CANCEL_SUBSCRIPTION_RENEWAL !== 'false'
 const AUTO_ENABLE_CHINESE_MODELS = process.env.AUTO_ENABLE_CHINESE_MODELS !== 'false'
 
 let accountPollScheduleHydration: Promise<void> | null = null
@@ -237,45 +238,66 @@ async function expandAccountWorkspacesOnce(id: number): Promise<Account[]> {
   }
 }
 
-export async function enableAccountChineseModels(id: number): Promise<Account> {
-  const account = await ensureAccountIpAssignment(id)
-  if (!account) throw createError({ statusCode: 404, statusMessage: 'Account not found' })
+export function enableAccountChineseModels(id: number): Promise<Account> {
+  return runAccountOperation(id, async () => {
+    const account = await ensureAccountIpAssignment(id)
+    if (!account) throw createError({ statusCode: 404, statusMessage: 'Account not found' })
 
-  try {
-    const workspaceId = account.workspace_id
-    if (!workspaceId) throw new Error('无法获取账号的 workspace ID，请先刷新账号')
+    const start = Date.now()
+    try {
+      const workspaceId = account.workspace_id
+      if (!workspaceId) throw new Error('无法获取账号的 workspace ID，请先刷新账号')
 
-    await toggleChineseModels(account.auth_cookie, workspaceId, true)
-    return (await updateAccount(id, {
-      chinese_models_enabled_at: new Date().toISOString(),
-      chinese_models_enable_error: null
-    }))!
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    await updateAccount(id, { chinese_models_enable_error: message }).catch(() => {})
-    throw createError({ statusCode: 502, statusMessage: message })
-  }
+      await toggleChineseModels(account.auth_cookie, workspaceId, true)
+      const updated = (await updateAccount(id, {
+        chinese_models_enabled_at: new Date().toISOString(),
+        chinese_models_enable_error: null
+      }))!
+      void logOperation({
+        operation: 'enable_chinese_models',
+        trigger_type: 'api',
+        account_id: id,
+        status: 'success',
+        detail: `账号 #${id} 中国模型已开启`,
+        duration_ms: Date.now() - start
+      })
+      return updated
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      await updateAccount(id, { chinese_models_enable_error: message }).catch(() => {})
+      void logOperation({
+        operation: 'enable_chinese_models',
+        trigger_type: 'api',
+        account_id: id,
+        status: 'error',
+        error_message: message,
+        duration_ms: Date.now() - start
+      })
+      throw createError({ statusCode: 502, statusMessage: message })
+    }
+  })
 }
 
-export async function toggleAccountChineseModels(id: number, enable: boolean): Promise<Account> {
-  const account = await ensureAccountIpAssignment(id)
-  if (!account) throw createError({ statusCode: 404, statusMessage: 'Account not found' })
+export function toggleAccountChineseModels(id: number, enable: boolean): Promise<Account> {
+  return runAccountOperation(id, async () => {
+    const account = await ensureAccountIpAssignment(id)
+    if (!account) throw createError({ statusCode: 404, statusMessage: 'Account not found' })
 
-  try {
-    const workspaceId = account.workspace_id
-    if (!workspaceId) throw new Error('无法获取账号的 workspace ID，请先刷新账号')
+    try {
+      const workspaceId = account.workspace_id
+      if (!workspaceId) throw new Error('无法获取账号的 workspace ID，请先刷新账号')
 
-    // 脚本先读取官网当前状态，只有与目标状态不一致时才提交 toggle。
-    await toggleChineseModels(account.auth_cookie, workspaceId, enable)
-    return (await updateAccount(id, {
-      chinese_models_enabled_at: enable ? new Date().toISOString() : null,
-      chinese_models_enable_error: null
-    }))!
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    await updateAccount(id, { chinese_models_enable_error: message }).catch(() => {})
-    throw createError({ statusCode: 502, statusMessage: message })
-  }
+      await toggleChineseModels(account.auth_cookie, workspaceId, enable)
+      return (await updateAccount(id, {
+        chinese_models_enabled_at: enable ? new Date().toISOString() : null,
+        chinese_models_enable_error: null
+      }))!
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      await updateAccount(id, { chinese_models_enable_error: message }).catch(() => {})
+      throw createError({ statusCode: 502, statusMessage: message })
+    }
+  })
 }
 
 async function autoCancelSubscriptionRenewal(accounts: Account[]) {
@@ -579,7 +601,8 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
         : quota.exhausted.length
           ? `quota:${quota.exhausted.join(',')}`
           : null
-    return (await updateAccount(id, {
+    const wasFirstSync = currentAccount.status === 'pending' && status === 'active'
+    const saved = (await updateAccount(id, {
       email: resolveRefreshedAccountEmail(info.email, account.email),
       workspace_id: info.workspaceId,
       workspace_name: info.workspaceName,
@@ -610,6 +633,45 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
         : referralError,
       last_synced_at: now.toISOString()
     }))!
+    // On first successful sync: auto-cancel renewal and auto-enable chinese models in background.
+    if (wasFirstSync) {
+      void (async () => {
+        try {
+          if (!saved.subscription_cancelled_at && saved.subscription_status === 'active') {
+            await cancelAccountRenewal(id).catch(err => {
+              void logOperation({
+                operation: 'cancel_renewal',
+                trigger_type: 'scheduled',
+                account_id: id,
+                status: 'error',
+                error_message: err instanceof Error ? err.message : String(err)
+              })
+            })
+          }
+          if (!saved.chinese_models_enabled_at) {
+            await enableAccountChineseModels(id).catch(err => {
+              void logOperation({
+                operation: 'enable_chinese_models',
+                trigger_type: 'scheduled',
+                account_id: id,
+                status: 'error',
+                error_message: err instanceof Error ? err.message : String(err)
+              })
+            })
+          }
+        } catch {
+          // background task; never propagate
+        }
+      })()
+    }
+    void logOperation({
+      operation: 'refresh_account',
+      trigger_type: 'scheduled',
+      account_id: id,
+      status: 'success',
+      detail: `账号 #${id} 刷新成功，状态：${status}`
+    })
+    return saved
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     const currentAccount = (await getAccount(id)) || account
@@ -632,10 +694,16 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
         last_synced_at: new Date().toISOString()
       }))!
     } catch (updateError) {
-      // If account update fails, log but re-throw original error
       console.error('Failed to update account error state:', updateError)
       throw err
     }
+    void logOperation({
+      operation: 'refresh_account',
+      trigger_type: 'scheduled',
+      account_id: id,
+      status: 'error',
+      error_message: message
+    })
     if (options.throwOnError) throw err
     return failedAccount
   }
@@ -827,8 +895,8 @@ export async function refreshDueMembershipAccounts(now = new Date()) {
       account.disabled_reason === 'manual' ||
       account.disabled_reason === 'auth_expired'
     ) return false
-    const lastSynced = account.last_synced_at ? new Date(account.last_synced_at).getTime() : 0
-    return !Number.isFinite(lastSynced) || lastSynced + 15 * 60 * 1000 <= nowMs
+    const lastSynced = account.last_synced_at ? new Date(account.last_synced_at).getTime() : null
+    return lastSynced === null || lastSynced + 15 * 60 * 1000 <= nowMs
   }).map(account => account.id)
   return refreshScheduledAccounts(ids, { skipErrors: true })
 }
@@ -933,6 +1001,7 @@ async function cancelAccountRenewalOnce(id: number) {
     throw createError({ statusCode: 404, statusMessage: 'Account not found' })
   }
   const fetchImpl = await createAccountFetch(account)
+  const start = Date.now()
 
   const info = await fetchOpenCodeAccount(account.auth_cookie, account.workspace_id, fetchImpl)
   if (info.subscriptionStatus !== 'active') {
@@ -942,30 +1011,52 @@ async function cancelAccountRenewalOnce(id: number) {
     throw createError({ statusCode: 502, statusMessage: 'Subscription cancellation action could not be resolved' })
   }
 
-  const cancellation = await cancelOpenCodeSubscriptionRenewal(
-    account.auth_cookie,
-    info.workspaceId,
-    info.liteSubscriptionId,
-    info.billingPortalServerId,
-    fetchImpl
-  )
-  const checkedAt = new Date().toISOString()
-  await updateAccount(id, {
-    cancelled_subscription_id: info.liteSubscriptionId,
-    subscription_cancelled_at:
-      cancellation.alreadyCancelled && account.subscription_cancelled_at
-        ? account.subscription_cancelled_at
-        : checkedAt,
-    subscription_cancel_checked_at: checkedAt,
-    subscription_ends_at: cancellation.currentPeriodEnd,
-    subscription_cancel_error: null
-  })
+  try {
+    const cancellation = await cancelOpenCodeSubscriptionRenewal(
+      account.auth_cookie,
+      info.workspaceId,
+      info.liteSubscriptionId,
+      info.billingPortalServerId,
+      fetchImpl
+    )
+    const checkedAt = new Date().toISOString()
+    await updateAccount(id, {
+      cancelled_subscription_id: info.liteSubscriptionId,
+      subscription_cancelled_at:
+        cancellation.alreadyCancelled && account.subscription_cancelled_at
+          ? account.subscription_cancelled_at
+          : checkedAt,
+      subscription_cancel_checked_at: checkedAt,
+      subscription_ends_at: cancellation.currentPeriodEnd,
+      subscription_cancel_error: null
+    })
 
-  const refreshedAccount = await refreshAccountOnce(id, { skipReferralRewards: true })
-  await updateAccountPollSchedule(refreshedAccount)
-  return {
-    account: refreshedAccount,
-    alreadyCancelled: cancellation.alreadyCancelled,
-    currentPeriodEnd: cancellation.currentPeriodEnd
+    void logOperation({
+      operation: 'cancel_renewal',
+      trigger_type: 'api',
+      account_id: id,
+      status: 'success',
+      detail: cancellation.alreadyCancelled ? `账号 #${id} 续费已取消（之前已取消）` : `账号 #${id} 续费取消成功`,
+      duration_ms: Date.now() - start
+    })
+
+    const refreshedAccount = await refreshAccountOnce(id, { skipReferralRewards: true })
+    await updateAccountPollSchedule(refreshedAccount)
+    return {
+      account: refreshedAccount,
+      alreadyCancelled: cancellation.alreadyCancelled,
+      currentPeriodEnd: cancellation.currentPeriodEnd
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    void logOperation({
+      operation: 'cancel_renewal',
+      trigger_type: 'api',
+      account_id: id,
+      status: 'error',
+      error_message: message,
+      duration_ms: Date.now() - start
+    })
+    throw error
   }
 }

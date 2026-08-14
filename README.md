@@ -1,8 +1,197 @@
 # OpenCode Manager
 
+Nuxt UI 全栈号池管理系统，使用 PostgreSQL 存储账号，通过浏览器 Cookie 自动抓取 OpenCode SSR 页面解析 workspace / 用量，提供 OpenAI 兼容的代理接口。
+
 项目仓库：https://github.com/10dian-ai/opencode-manager
 
-Nuxt UI 全栈号池管理：PostgreSQL 存储账号，通过浏览器 Cookie 自动抓取 OpenCode SSR 页面解析 workspace / 用量。
+## 简介
+
+OpenCode Manager 是一个账号池管理工具。你可以批量导入 OpenCode 账号的 auth cookie，系统会自动同步账号信息、管理订阅状态，并通过 OpenAI 兼容接口对外提供 API 代理。
+
+## 功能特性
+
+- Admin Key 登录（读取 `config.yaml` 或环境变量）
+- 号池 CRUD：粘贴 auth cookie 自动同步、批量导入
+- 解析 workspace、邮箱、滚动/周/月用量、推荐码
+- 单号刷新 / 全部刷新；error 账号可配置自动重试
+- 出口 IP 池：HTTP/HTTPS/SOCKS5 代理批量导入、连通性检测、稳定分块绑定
+- OpenAI 兼容的 `/v1/models`、`/v1/chat/completions`（支持流式透传）
+- 支持单号或全量风控检测
+- 自动取消续费（默认开启）；自动开启中国模型（默认开启）
+- 额度耗尽自动禁用并在窗口释放后恢复；会员过期自动禁用
+- 操作日志：记录账号关键操作及结果，支持分页和筛选
+- 调用日志：记录每次代理请求详情
+
+## 快速开始
+
+### 环境要求
+
+- Node.js 20+ 或 Bun 1.x
+- PostgreSQL 14+
+
+### 安装
+
+```bash
+git clone https://github.com/10dian-ai/opencode-manager
+cd opencode-manager
+bun install
+```
+
+### 配置
+
+创建 `config.yaml`：
+
+```yaml
+admin_key: "your-admin-key"
+api_keys:
+  - "sk-ocm-your-client-key"
+```
+
+或使用环境变量（优先级更高）：
+
+```bash
+ADMIN_KEY=your-admin-key
+API_KEYS=sk-ocm-key-1,sk-ocm-key-2
+DATABASE_URL=postgres://opencode:opencode@127.0.0.1:5432/opencode_manager
+```
+
+### 启动
+
+```bash
+# 启动本地 PostgreSQL（开发用）
+docker run -d --name ocm-pg -p 5432:5432 \
+  -e POSTGRES_USER=opencode \
+  -e POSTGRES_PASSWORD=opencode \
+  -e POSTGRES_DB=opencode_manager \
+  postgres:17-alpine
+
+export DATABASE_URL=postgres://opencode:opencode@127.0.0.1:5432/opencode_manager
+export ADMIN_KEY=admin123
+bun run dev
+```
+
+打开 http://localhost:3000，使用 `admin_key` 登录。
+
+## Docker 部署
+
+推荐方式，一条命令拉起应用 + PostgreSQL：
+
+```bash
+cp .env.example .env
+# 至少修改 ADMIN_KEY 和 POSTGRES_PASSWORD
+docker compose up -d
+```
+
+- 应用默认端口 `3030`，可通过 `APP_PORT` 修改
+- 监控面板端口 `3031`，可通过 `MONITOR_PORT` 修改
+- 数据存储在 `postgres-data` 命名卷
+
+常用操作：
+
+```bash
+docker compose logs -f app
+docker compose down            # 停止（保留数据）
+docker compose down -v         # 停止并删除数据（不可恢复）
+docker compose pull app && docker compose up -d  # 更新镜像
+```
+
+### 单独运行容器
+
+```bash
+docker run -d \
+  --name opencode-manager \
+  -p 3030:3000 \
+  -e ADMIN_KEY=your-admin-key \
+  -e DATABASE_URL=postgres://opencode:opencode@your-host:5432/opencode \
+  ghcr.io/10dian-ai/opencode-manager:latest
+```
+
+## API 文档
+
+### 认证
+
+管理接口通过 session cookie 认证：
+
+```bash
+curl -c cookies.txt -X POST http://localhost:3030/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"key": "your-admin-key"}'
+
+curl -b cookies.txt http://localhost:3030/api/accounts
+```
+
+OpenAI 兼容接口使用 API Key：
+
+```bash
+curl -H "Authorization: Bearer sk-ocm-your-key" \
+  http://localhost:3030/v1/models
+```
+
+### 账号管理端点
+
+| Method | Path | 说明 |
+|--------|------|------|
+| GET | `/api/accounts` | 账号列表 |
+| POST | `/api/accounts/add` | 添加单个账号：`{ auth_cookie, name? }` |
+| POST | `/api/accounts/batch` | 批量添加：`{ auth_cookie_values, name? }` |
+| PATCH | `/api/accounts/:id` | 更新账号设置 |
+| DELETE | `/api/accounts/:id` | 删除账号 |
+| POST | `/api/accounts/:id/refresh` | 刷新单个账号 |
+| POST | `/api/accounts/refresh-all` | 刷新全部账号 |
+| GET | `/api/accounts/status` | 账号状态摘要（含余额、可用性） |
+| POST | `/api/accounts/:id/risk-control-check` | 单号风控检测 |
+| POST | `/api/accounts/risk-control/check-all` | 全量风控检测 |
+| DELETE | `/api/accounts/non-members` | 删除全部非会员账号 |
+| GET | `/api/logs` | 操作日志，支持 `limit/offset/operation/status` 筛选 |
+| GET | `/v1/models` | OpenAI 兼容模型列表 |
+| POST | `/v1/chat/completions` | OpenAI 兼容聊天接口 |
+
+详细字段说明见 [docs/api-reference.md](docs/api-reference.md)。
+
+## 配置说明
+
+### 基础配置
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `ADMIN_KEY` | 管理员登录密钥 | — |
+| `API_KEYS` | 对外 API 密钥，逗号分隔 | — |
+
+### 数据库
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `DATABASE_URL` | 完整连接串（优先） | — |
+| `POSTGRES_HOST` | 数据库主机 | `127.0.0.1` |
+| `POSTGRES_PORT` | 端口 | `5432` |
+| `POSTGRES_USER` | 用户名 | `opencode` |
+| `POSTGRES_PASSWORD` | 密码 | — |
+| `POSTGRES_DB` | 数据库名 | `opencode_manager` |
+| `DATABASE_SSL` | 启用 SSL | `false` |
+| `POSTGRES_POOL_MAX` | 连接池最大连接数 | `20` |
+
+### 账号行为
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `AUTO_CANCEL_SUBSCRIPTION_RENEWAL` | 首次同步后自动取消续费 | `true` |
+| `AUTO_ENABLE_CHINESE_MODELS` | 首次同步后自动开启中国模型 | `true` |
+| `AUTO_APPLY_REFERRAL_REWARDS` | 自动使用推广收益 | `false` |
+| `RISK_CONTROL_CHECK_MODEL` | 风控检测使用的探测模型 | `glm-5.2` |
+
+### 代理
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `PROXY_MIN_WORKERS` | 最小工作槽 | `4` |
+| `PROXY_MAX_WORKERS` | 最大工作槽 | `32` |
+| `PROXY_QUEUE_LIMIT` | 等待队列上限 | `8192` |
+| `PROXY_ACCOUNT_CONCURRENCY` | 单账号最大并发请求数 | `2` |
+| `TRUST_PROXY` | 信任反向代理的 X-Forwarded-For | `false` |
+
+## 贡献
+
+欢迎提交 Issue 和 Pull Request。推送到 `master` 会自动构建并发布 Docker 镜像；推送 `v*.*.*` 标签会额外发布语义版本标签。
 
 ## 功能
 

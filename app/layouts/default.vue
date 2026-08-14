@@ -7,7 +7,8 @@ const links = [
   { label: '号池', to: '/accounts', icon: 'i-lucide-users' },
   { label: 'IP 池', to: '/ip-pool', icon: 'i-lucide-network' },
   { label: 'API 密钥', to: '/api-keys', icon: 'i-lucide-key-round' },
-  { label: '调用日志', to: '/call-logs', icon: 'i-lucide-scroll-text' }
+  { label: '调用日志', to: '/call-logs', icon: 'i-lucide-scroll-text' },
+  { label: '操作日志', to: '/logs', icon: 'i-lucide-activity' }
 ]
 </script>
 
@@ -55,7 +56,7 @@ const links = [
       </UContainer>
     </UMain>
 
-    <nav class="fixed inset-x-3 bottom-3 z-50 grid grid-cols-5 gap-1 rounded-2xl border border-default bg-default/95 p-2 shadow-xl backdrop-blur md:hidden">
+    <nav class="fixed inset-x-3 bottom-3 z-50 grid grid-cols-6 gap-1 rounded-2xl border border-default bg-default/95 p-2 shadow-xl backdrop-blur md:hidden">
       <UButton
         v-for="link in links"
         :key="link.to"

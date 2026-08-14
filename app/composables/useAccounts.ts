@@ -117,7 +117,7 @@ export interface RiskControlCheckResult {
   message: string | null
 }
 
-export type BulkAccountAction = 'refresh' | 'risk-control-check' | 'enable' | 'disable' | 'enable-chinese-models' | 'disable-chinese-models'
+export type BulkAccountAction = 'refresh' | 'risk-control-check' | 'enable' | 'disable' | 'enable-chinese-models' | 'disable-chinese-models' | 'cancel-renewal'
 
 export interface BulkAccountActionResult {
   action: BulkAccountAction
@@ -464,6 +464,15 @@ export function useAccounts() {
         const result = await requestFetch<{ success: boolean; account: Account }>(
           '/api/accounts/toggle-chinese-models',
           { method: 'POST', body: { account_id: account.id, enable } }
+        )
+        updatedAccounts.push(result.account)
+        applyAccount(result.account)
+        return
+      }
+      if (action === 'cancel-renewal') {
+        const result = await requestFetch<{ account: Account; alreadyCancelled: boolean; currentPeriodEnd: string | null }>(
+          `/api/accounts/${account.id}/cancel-renewal`,
+          { method: 'POST' }
         )
         updatedAccounts.push(result.account)
         applyAccount(result.account)

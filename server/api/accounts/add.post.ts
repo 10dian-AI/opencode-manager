@@ -10,6 +10,7 @@ export default defineEventHandler(async (event) => {
     })
   }
 
+  const startTime = Date.now()
   try {
     const account = await createAccount({
       name: body.name,
@@ -22,12 +23,28 @@ export default defineEventHandler(async (event) => {
     // Trigger initial refresh
     void refreshAccount(account.id).catch(() => {})
 
+    void logOperation({
+      operation: 'add_account',
+      trigger_type: 'api',
+      account_id: account.id,
+      status: 'success',
+      duration_ms: Date.now() - startTime
+    })
+
     return {
       success: true,
       account: toPublicAccount(account),
       message: '账号添加成功'
     }
   } catch (error: any) {
+    void logOperation({
+      operation: 'add_account',
+      trigger_type: 'api',
+      status: 'error',
+      error_message: error.message || '添加账号失败',
+      duration_ms: Date.now() - startTime
+    })
+
     if (error.statusCode === 409) {
       throw createError({
         statusCode: 409,
