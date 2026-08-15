@@ -380,10 +380,12 @@ async function initializeSchema(client: SqlClient) {
       FOREIGN KEY (ip_pool_id) REFERENCES ip_pool(id) ON DELETE SET NULL
     `)
     await migrateAccountsSchema(client)
-    // 一次性回填抛弃账号标记（幂等，每次启动都会运行；手动标记的账号永不被动改）
+    // 一次性回填抛弃账号标记（幂等，每次启动都会运行；手动标记的账号永不被动改）。
+    // 注意：disabled_reason 可能为 NULL，(expr) IS TRUE 保证表达式永不返回 NULL，
+    // 否则 `NULL OR FALSE = NULL` 会写进 NOT NULL 的 is_abandoned 列导致启动崩溃。
     await client.query(`
       UPDATE accounts SET
-        is_abandoned = (disabled_reason = 'risk_control' OR (monthly_usage IS NOT NULL AND monthly_usage >= 100)),
+        is_abandoned = (disabled_reason = 'risk_control') IS TRUE OR (monthly_usage IS NOT NULL AND monthly_usage >= 100),
         abandoned_reason = CASE WHEN abandoned_reason = 'manual' THEN 'manual'
           WHEN disabled_reason = 'risk_control' THEN 'risk_control'
           WHEN (monthly_usage IS NOT NULL AND monthly_usage >= 100) THEN 'monthly_limit'
