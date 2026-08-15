@@ -36,10 +36,14 @@ export interface Account {
   subscription_cancel_error: string | null
   chinese_models_enabled_at: string | null
   chinese_models_enable_error: string | null
+  chinese_models_checked_at: string | null
+  chinese_models_manual_off_at: string | null
   upstream_api_key: string | null
   ip_pool_id: number | null
   status: AccountStatus
   disabled_reason: string | null
+  is_abandoned: boolean
+  abandoned_reason: string | null
   auto_enable_at: string | null
   risk_control_checked_at: string | null
   risk_control_detected_at: string | null
@@ -127,10 +131,14 @@ const ACCOUNT_COLUMNS = new Set<string>([
   'subscription_cancel_error',
   'chinese_models_enabled_at',
   'chinese_models_enable_error',
+  'chinese_models_checked_at',
+  'chinese_models_manual_off_at',
   'upstream_api_key',
   'ip_pool_id',
   'status',
   'disabled_reason',
+  'is_abandoned',
+  'abandoned_reason',
   'auto_enable_at',
   'risk_control_checked_at',
   'risk_control_detected_at',
@@ -239,10 +247,14 @@ const SCHEMA_SQL = `
     subscription_cancel_error TEXT,
     chinese_models_enabled_at TEXT,
     chinese_models_enable_error TEXT,
+    chinese_models_checked_at TEXT,
+    chinese_models_manual_off_at TEXT,
     upstream_api_key TEXT,
     ip_pool_id BIGINT,
     status TEXT NOT NULL DEFAULT 'pending',
     disabled_reason TEXT,
+    is_abandoned BOOLEAN NOT NULL DEFAULT FALSE,
+    abandoned_reason TEXT,
     auto_enable_at TEXT,
     risk_control_checked_at TEXT,
     risk_control_detected_at TEXT,
@@ -368,7 +380,18 @@ async function initializeSchema(client: SqlClient) {
       FOREIGN KEY (ip_pool_id) REFERENCES ip_pool(id) ON DELETE SET NULL
     `)
     await migrateAccountsSchema(client)
+    // 一次性回填抛弃账号标记（幂等，每次启动都会运行；手动标记的账号永不被动改）
+    await client.query(`
+      UPDATE accounts SET
+        is_abandoned = (disabled_reason = 'risk_control' OR (monthly_usage IS NOT NULL AND monthly_usage >= 100)),
+        abandoned_reason = CASE WHEN abandoned_reason = 'manual' THEN 'manual'
+          WHEN disabled_reason = 'risk_control' THEN 'risk_control'
+          WHEN (monthly_usage IS NOT NULL AND monthly_usage >= 100) THEN 'monthly_limit'
+          ELSE NULL END
+      WHERE abandoned_reason IS DISTINCT FROM 'manual'
+    `)
     await migrateCallLogsSchema(client)
+    await migrateOperationLogsSchema(client)
     await migrateStoredAuthCookieValues(client)
   } finally {
     await client.query('SELECT pg_advisory_unlock($1)', [4_517_923_001])
@@ -379,11 +402,38 @@ async function migrateAccountsSchema(client: SqlClient) {
   await client.query(`
     ALTER TABLE accounts
       ADD COLUMN IF NOT EXISTS chinese_models_enabled_at TEXT,
-      ADD COLUMN IF NOT EXISTS chinese_models_enable_error TEXT
+      ADD COLUMN IF NOT EXISTS chinese_models_enable_error TEXT,
+      ADD COLUMN IF NOT EXISTS chinese_models_checked_at TEXT,
+      ADD COLUMN IF NOT EXISTS chinese_models_manual_off_at TEXT,
+      ADD COLUMN IF NOT EXISTS is_abandoned BOOLEAN NOT NULL DEFAULT FALSE,
+      ADD COLUMN IF NOT EXISTS abandoned_reason TEXT
   `)
   await client.query(`
     ALTER TABLE api_keys
       ADD COLUMN IF NOT EXISTS affinity_enabled BOOLEAN NOT NULL DEFAULT FALSE
+  `)
+}
+
+async function migrateOperationLogsSchema(client: SqlClient) {
+  // CREATE TABLE IF NOT EXISTS does not upgrade installations that already
+  // have an older operation_logs table, so keep all additive migrations explicit.
+  // 对带 DEFAULT 或可空列直接 ADD COLUMN IF NOT EXISTS；无 DEFAULT 的 NOT NULL 列
+  // （operation/trigger_type/status）迁移时以可空形式添加，避免旧表已有行时整条
+  // ALTER 失败导致应用无法启动（应用侧始终会写入这些字段；新装库由 CREATE TABLE
+  // 保持 NOT NULL）。
+  await client.query(`
+    ALTER TABLE operation_logs
+      ADD COLUMN IF NOT EXISTS id BIGINT,
+      ADD COLUMN IF NOT EXISTS operation TEXT,
+      ADD COLUMN IF NOT EXISTS trigger_type TEXT,
+      ADD COLUMN IF NOT EXISTS account_id BIGINT,
+      ADD COLUMN IF NOT EXISTS account_ids TEXT,
+      ADD COLUMN IF NOT EXISTS status TEXT,
+      ADD COLUMN IF NOT EXISTS detail TEXT,
+      ADD COLUMN IF NOT EXISTS error_message TEXT,
+      ADD COLUMN IF NOT EXISTS blocked_at TEXT,
+      ADD COLUMN IF NOT EXISTS duration_ms INTEGER,
+      ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   `)
 }
 
@@ -625,6 +675,7 @@ export async function getProxyCandidates(): Promise<Account[]> {
       AND subscription_status = 'active'
       AND upstream_api_key IS NOT NULL
       AND upstream_api_key <> ''
+      AND is_abandoned IS NOT TRUE
     ORDER BY
       CASE WHEN subscription_ends_at IS NULL THEN 1 ELSE 0 END ASC,
       subscription_ends_at ASC,

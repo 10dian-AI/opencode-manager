@@ -26,10 +26,14 @@ export interface Account {
   subscription_cancel_error: string | null
   chinese_models_enabled_at: string | null
   chinese_models_enable_error: string | null
+  chinese_models_checked_at: string | null
+  chinese_models_manual_off_at: string | null
   has_upstream_api_key: boolean
   ip_pool_id: number | null
   status: 'pending' | 'active' | 'error' | 'disabled'
   disabled_reason: string | null
+  is_abandoned: boolean
+  abandoned_reason: string | null
   auto_enable_at: string | null
   risk_control_checked_at: string | null
   risk_control_detected_at: string | null
@@ -47,6 +51,7 @@ export interface Stats {
   pending: number
   members: number
   nonMembers: number
+  abandoned: number
   available: number
   avgRollingRemaining: number
   avgWeeklyRemaining: number
@@ -255,7 +260,7 @@ export function useAccounts() {
     }
   }
 
-  async function updateAccount(id: number, payload: Partial<{ name: string; auth_cookie: string; status: Account['status'] }>) {
+  async function updateAccount(id: number, payload: Partial<{ name: string; auth_cookie: string; status: Account['status']; is_abandoned: boolean }>) {
     const account = await requestFetch<Account>(`/api/accounts/${id}`, {
       method: 'PATCH',
       body: payload
@@ -288,6 +293,19 @@ export function useAccounts() {
     })
     await Promise.all([fetchAccounts(), fetchStats()])
     return result
+  }
+
+  async function fetchAbandonedAccounts() {
+    return requestFetch<Account[]>('/api/accounts/abandoned')
+  }
+
+  async function setAccountAbandoned(id: number, value: boolean) {
+    const account = await requestFetch<Account>(`/api/accounts/${id}`, {
+      method: 'PATCH',
+      body: { is_abandoned: value }
+    })
+    await Promise.all([fetchAccounts(), fetchStats()])
+    return account
   }
 
   async function refreshAccount(
@@ -542,6 +560,8 @@ export function useAccounts() {
     removeAccount,
     removeAccounts,
     removeNonMembers,
+    fetchAbandonedAccounts,
+    setAccountAbandoned,
     refreshAccount,
     fetchReferralRewards,
     useReferralReward,

@@ -12,6 +12,7 @@ export default defineEventHandler(async (event) => {
     name: key.name,
     prefix: key.key_prefix,
     source: 'web' as const,
+    affinity_enabled: key.affinity_enabled,
     created_at: key.created_at
   }))
   return [...configKeys, ...managedKeys]

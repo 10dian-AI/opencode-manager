@@ -19,6 +19,7 @@ export default defineEventHandler(async (event) => {
   const nonMembers = accounts.filter(account =>
     account.subscription_status !== null && account.subscription_status !== 'active'
   )
+  const abandoned = accounts.filter(account => account.is_abandoned)
 
   // For each available member, effective remaining = min(5h remaining, weekly remaining, monthly remaining)
   // This reflects the true usable quota before hitting any window limit.
@@ -37,6 +38,7 @@ export default defineEventHandler(async (event) => {
     pending: accounts.filter(a => a.status === 'pending').length,
     members: members.length,
     nonMembers: nonMembers.length,
+    abandoned: abandoned.length,
     available: availableMembers.length,
     avgRollingRemaining: avgRemaining(availableMembers.map(a => a.rolling_usage)),
     avgWeeklyRemaining: avgRemaining(availableMembers.map(a => a.weekly_usage)),

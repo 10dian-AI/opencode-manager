@@ -14,6 +14,7 @@ type DeleteIntent =
 
 const {
   accounts,
+  stats,
   loading,
   accountRefreshSettings,
   fetchAccounts,
@@ -25,6 +26,8 @@ const {
   fetchAccountAuthCookie,
   removeAccount,
   removeNonMembers,
+  fetchAbandonedAccounts,
+  setAccountAbandoned,
   refreshAccount,
   fetchReferralRewards,
   useReferralReward,
@@ -73,8 +76,21 @@ const deleteIntent = ref<DeleteIntent | null>(null)
 const deleteDialogOpen = ref(false)
 const deleteConfirmLoading = ref(false)
 const autoRefreshSaving = ref(false)
+const abandonedAccounts = ref<Account[]>([])
+const abandonedExpanded = ref(false)
+const abandonedLoading = ref(false)
+const abandonedFetched = ref(false)
 let statusSyncTimer: ReturnType<typeof setInterval> | null = null
 let statusSyncLastFired = 0
+let visibilityCleanup: (() => void) | null = null
+let listsRefreshTimer: ReturnType<typeof setTimeout> | null = null
+let abandonedRequestGeneration = 0
+
+const abandonedReasonLabelMap: Record<string, string> = {
+  risk_control: '风控命中',
+  monthly_limit: '月限额用尽',
+  manual: '手动标记'
+}
 
 const filteredAccounts = computed(() => {
   return accounts.value.filter((account) => {
@@ -87,7 +103,8 @@ const filteredAccounts = computed(() => {
       riskControlFilter.value === 'all' ||
       (riskControlFilter.value === 'risk-controlled' && isRiskControlled) ||
       (riskControlFilter.value === 'not-risk-controlled' && !isRiskControlled)
-    return matchesMembership && matchesRiskControl
+    // 抛弃账号在主列表双保险过滤（/api/accounts 已不含抛弃账号）
+    return matchesMembership && matchesRiskControl && !account.is_abandoned
   })
 })
 
@@ -148,18 +165,56 @@ watch(
 onMounted(() => {
   void Promise.allSettled([fetchAccounts(), fetchStats(), fetchAccountRefreshSettings()])
   statusSyncTimer = setInterval(() => {
-    const interval = batchProgress.value || singleRefreshProgress.value ? 10_000 : 60_000
+    // 后台标签页不轮询（visibilitychange 负责回前台时立即同步），省流量
+    if (document.hidden) return
+    const interval = batchProgress.value || singleRefreshProgress.value ? 10_000 : 30_000
     if (!statusSyncLastFired) statusSyncLastFired = Date.now()
     if (Date.now() - statusSyncLastFired < interval) return
     statusSyncLastFired = Date.now()
     if (loading.value || batchProgress.value || singleRefreshProgress.value) return
     void Promise.allSettled([fetchAccounts(true), fetchStats()])
+    refreshAbandonedIfOpen()
   }, 5_000)
+  const onVisibilityChange = () => {
+    // 页面重新可见时立即同步，保证标签栏/折叠计数保持最新
+    if (document.visibilityState === 'visible') {
+      void Promise.allSettled([fetchAccounts(true), fetchStats()])
+      refreshAbandonedIfOpen()
+    }
+  }
+  document.addEventListener('visibilitychange', onVisibilityChange)
+  visibilityCleanup = onVisibilityChange
 })
 
 onBeforeUnmount(() => {
   if (statusSyncTimer) clearInterval(statusSyncTimer)
+  if (visibilityCleanup) {
+    document.removeEventListener('visibilitychange', visibilityCleanup)
+    visibilityCleanup = null
+  }
+  if (listsRefreshTimer) {
+    clearTimeout(listsRefreshTimer)
+    listsRefreshTimer = null
+  }
 })
+
+function refreshAbandonedIfOpen() {
+  // 已展开且已拉取过才静默刷新；走 loadAbandonedAccounts 统一做请求代次守卫
+  if (abandonedExpanded.value && abandonedFetched.value) {
+    void loadAbandonedAccounts(true)
+  }
+}
+
+function refreshListsAfterDelay() {
+  // 延迟捞起后台 fire-and-forget 的自动开启中国模型结果；复用单个定时器句柄，
+  // 避免连续操作累积定时器，并在组件卸载时清理。
+  if (listsRefreshTimer) clearTimeout(listsRefreshTimer)
+  listsRefreshTimer = setTimeout(() => {
+    listsRefreshTimer = null
+    void Promise.allSettled([fetchAccounts(true), fetchStats()])
+    refreshAbandonedIfOpen()
+  }, 5_000)
+}
 
 async function onAutoRefreshErrors(value: boolean) {
   autoRefreshSaving.value = true
@@ -469,6 +524,7 @@ async function onRefresh(id: number) {
   } finally {
     actionId.value = null
     singleRefreshProgress.value = null
+    refreshListsAfterDelay()
   }
 }
 
@@ -531,6 +587,7 @@ async function onRefreshAll() {
   } finally {
     refreshingAll.value = false
     batchProgress.value = null
+    refreshListsAfterDelay()
   }
 }
 
@@ -775,6 +832,7 @@ async function executeBulkAction(action: AccountBatchAction, ids: number[]) {
   } finally {
     bulkAction.value = null
     batchProgress.value = null
+    refreshListsAfterDelay()
   }
 }
 
@@ -805,6 +863,81 @@ async function confirmDelete() {
   } finally {
     actionId.value = null
     deleteConfirmLoading.value = false
+  }
+}
+
+async function toggleAbandoned() {
+  abandonedExpanded.value = !abandonedExpanded.value
+  if (abandonedExpanded.value) await loadAbandonedAccounts()
+}
+
+async function loadAbandonedAccounts(force = false) {
+  if (!force && abandonedFetched.value) return
+  const generation = ++abandonedRequestGeneration
+  abandonedLoading.value = true
+  try {
+    const result = await fetchAbandonedAccounts()
+    // 请求代次守卫：只接受最后一次发起的响应，避免慢响应覆盖新数据
+    if (generation === abandonedRequestGeneration) {
+      abandonedAccounts.value = result
+      abandonedFetched.value = true
+    }
+  } catch (e: any) {
+    if (generation === abandonedRequestGeneration) {
+      toast.add({ title: e?.data?.statusMessage || e?.message || '抛弃账号加载失败', color: 'error' })
+    }
+  } finally {
+    if (generation === abandonedRequestGeneration) abandonedLoading.value = false
+  }
+}
+
+async function onRestoreAbandoned(id: number) {
+  const target = abandonedAccounts.value.find(account => account.id === id)
+  try {
+    await setAccountAbandoned(id, false)
+    abandonedAccounts.value = abandonedAccounts.value.filter(account => account.id !== id)
+    const stillAbandoned = Boolean(target) && (
+      target!.disabled_reason === 'risk_control' ||
+      (typeof target!.monthly_usage === 'number' && target!.monthly_usage >= 100)
+    )
+    toast.add({
+      title: '账号已恢复',
+      description: stillAbandoned
+        ? '该账号仍满足自动抛弃条件（月限额≥100% / 风控命中），已手动保留在主列表，请注意额度与代理池参与'
+        : undefined,
+      color: stillAbandoned ? 'warning' : 'success'
+    })
+  } catch (e: any) {
+    toast.add({ title: e?.data?.statusMessage || e?.message || '恢复失败', color: 'error' })
+  }
+}
+
+async function onMarkAbandoned(account: Account) {
+  actionId.value = account.id
+  try {
+    await setAccountAbandoned(account.id, true)
+    toast.add({ title: '账号已标记为抛弃账号', color: 'success' })
+    refreshAbandonedIfOpen()
+  } catch (e: any) {
+    toast.add({ title: e?.data?.statusMessage || e?.message || '标记失败', color: 'error' })
+  } finally {
+    actionId.value = null
+  }
+}
+
+async function onAbandonedRefresh(account: Account) {
+  try {
+    await onRefresh(account.id)
+  } finally {
+    if (abandonedExpanded.value) await loadAbandonedAccounts(true)
+  }
+}
+
+async function onAbandonedCheckRiskControl(account: Account) {
+  try {
+    await onCheckRiskControl(account)
+  } finally {
+    if (abandonedExpanded.value) await loadAbandonedAccounts(true)
   }
 }
 
@@ -1301,6 +1434,15 @@ async function exportKeys() {
                     @click="onToggle(account)"
                   />
                   <UButton
+                    icon="i-lucide-package-x"
+                    size="xs"
+                    color="neutral"
+                    variant="ghost"
+                    title="标记为抛弃账号"
+                    :loading="actionId === account.id"
+                    @click="onMarkAbandoned(account)"
+                  />
+                  <UButton
                     icon="i-lucide-trash-2"
                     size="xs"
                     color="error"
@@ -1318,6 +1460,117 @@ async function exportKeys() {
             </tr>
           </tbody>
         </table>
+      </div>
+    </UCard>
+
+    <UCard class="ocm-card" :ui="{ body: 'p-0 sm:p-0' }">
+      <div class="flex items-center justify-between gap-3 px-4 py-3">
+        <button
+          type="button"
+          class="flex items-center gap-2 text-left"
+          :aria-expanded="abandonedExpanded"
+          @click="toggleAbandoned"
+        >
+          <UIcon
+            name="i-lucide-chevron-down"
+            class="size-4 text-muted transition-transform"
+            :class="{ 'rotate-180': abandonedExpanded }"
+          />
+          <span class="font-medium text-highlighted">抛弃账号 {{ stats?.abandoned ?? 0 }} 个</span>
+        </button>
+        <UButton
+          v-if="abandonedExpanded && abandonedFetched"
+          icon="i-lucide-refresh-cw"
+          size="xs"
+          color="neutral"
+          variant="ghost"
+          :loading="abandonedLoading"
+          @click="loadAbandonedAccounts(true)"
+        >
+          刷新
+        </UButton>
+      </div>
+      <div v-if="abandonedExpanded" class="overflow-x-auto border-t border-default">
+        <div v-if="abandonedLoading && !abandonedAccounts.length" class="py-8 text-center text-sm text-muted">
+          正在加载抛弃账号…
+        </div>
+        <template v-else-if="abandonedAccounts.length">
+          <table class="w-full text-sm">
+            <thead class="border-b border-default bg-elevated/50">
+              <tr class="text-left text-muted">
+                <th class="px-4 py-3 font-medium">账号</th>
+                <th class="px-4 py-3 font-medium">状态</th>
+                <th class="px-4 py-3 font-medium">抛弃原因</th>
+                <th class="px-4 py-3 font-medium">每月用量</th>
+                <th class="px-4 py-3 font-medium text-right">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="account in abandonedAccounts"
+                :key="account.id"
+                class="border-b border-default last:border-0 hover:bg-elevated/40"
+              >
+                <td class="px-4 py-3">
+                  <div class="font-medium text-highlighted">
+                    {{ account.name || account.email || `#${account.id}` }}
+                  </div>
+                  <div class="text-xs text-muted">{{ account.email || '邮箱未知' }}</div>
+                </td>
+                <td class="px-4 py-3">
+                  <UBadge :color="statusColor(account.status)" variant="subtle">
+                    {{ statusLabel(account.status) }}
+                  </UBadge>
+                  <div v-if="account.disabled_reason === 'auth_expired'" class="mt-1 text-xs text-error">
+                    Cookie 已失效，请更新 Cookie
+                  </div>
+                </td>
+                <td class="px-4 py-3">
+                  <UBadge color="error" variant="subtle">
+                    {{ abandonedReasonLabelMap[account.abandoned_reason || ''] || account.abandoned_reason || '未知' }}
+                  </UBadge>
+                </td>
+                <td class="px-4 py-3">
+                  <div>{{ formatPercent(account.monthly_usage) }}</div>
+                  <div class="text-xs text-muted">{{ formatDate(account.monthly_reset_at) }}</div>
+                </td>
+                <td class="px-4 py-3">
+                  <div class="flex justify-end gap-1">
+                    <UButton
+                      icon="i-lucide-refresh-cw"
+                      size="xs"
+                      color="neutral"
+                      variant="ghost"
+                      title="刷新"
+                      :loading="actionId === account.id"
+                      @click="onAbandonedRefresh(account)"
+                    />
+                    <UButton
+                      icon="i-lucide-shield-check"
+                      size="xs"
+                      color="neutral"
+                      variant="ghost"
+                      title="风控检测"
+                      :loading="actionId === account.id"
+                      @click="onAbandonedCheckRiskControl(account)"
+                    />
+                    <UButton
+                      icon="i-lucide-rotate-ccw"
+                      size="xs"
+                      color="primary"
+                      variant="ghost"
+                      title="恢复账号"
+                      @click="onRestoreAbandoned(account.id)"
+                    >
+                      恢复
+                    </UButton>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
+        <div v-else class="py-8 text-center text-sm text-muted">暂无抛弃账号</div>
       </div>
     </UCard>
 

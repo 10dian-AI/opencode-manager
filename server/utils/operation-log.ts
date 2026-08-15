@@ -4,7 +4,9 @@ export interface OperationLogEntry {
   operation: string
   trigger_type: 'manual' | 'api' | 'scheduled'
   account_id?: number | null
-  account_ids?: number[] | null
+  // 数据库 account_ids 列存的是 JSON 字符串（数组序列化），不是数组本身。
+  // 读取时经 getOperationLogs 的 account_ids_parsed 做防御性 JSON.parse。
+  account_ids?: string | null
   status: 'success' | 'error' | 'partial'
   detail?: string | null
   error_message?: string | null
@@ -14,7 +16,7 @@ export interface OperationLogEntry {
 
 export interface OperationLog extends OperationLogEntry {
   id: number
-  account_ids_json: string | null
+  account_ids: string | null
   created_at: string
 }
 
@@ -47,7 +49,7 @@ export async function logOperation(opts: OperationLogEntry): Promise<void> {
   try {
     await ensureSchema()
     const db = await getDb()
-    const accountIdsJson = opts.account_ids ? JSON.stringify(opts.account_ids) : null
+    const accountIdsJson = opts.account_ids || null
     await db.query(
       `INSERT INTO operation_logs
         (operation, trigger_type, account_id, account_ids, status, detail, error_message, blocked_at, duration_ms)
@@ -64,8 +66,9 @@ export async function logOperation(opts: OperationLogEntry): Promise<void> {
         opts.duration_ms ?? null
       ]
     )
-  } catch {
+  } catch (error) {
     // Log failures must never break the calling operation.
+    console.error('Failed to write operation log:', error)
   }
 }
 
@@ -96,7 +99,7 @@ export async function getOperationLogs(opts: {
   )
   return rows.map(row => ({
     ...row,
-    account_ids_parsed: row.account_ids ? (() => { try { return JSON.parse(row.account_ids as unknown as string) } catch { return null } })() : null
+    account_ids_parsed: row.account_ids ? (() => { try { return JSON.parse(row.account_ids) } catch { return null } })() : null
   }))
 }
 

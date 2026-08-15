@@ -135,6 +135,7 @@ export function updateAccountSettings(
     name?: string
     auth_cookie?: string
     status?: AccountStatus
+    is_abandoned?: boolean
   }
 ) {
   return runAccountOperation(id, async () => {
@@ -174,6 +175,12 @@ export function updateAccountSettings(
         ? body.status === 'disabled'
           ? { status: body.status, disabled_reason: 'manual', auto_enable_at: null }
           : { status: body.status, disabled_reason: null, auto_enable_at: null }
+        : {}),
+      // 手动标记/恢复都是用户显式意图：abandoned_reason 固定为 'manual'，
+      // 自动标记逻辑（refreshAccountOnce / markAccountRiskControlled 等）均以
+      // `!== 'manual'` 为守卫，因此手动恢复后不会被下次刷新或启动回填再次标记。
+      ...(body.is_abandoned !== undefined
+        ? { is_abandoned: body.is_abandoned, abandoned_reason: 'manual' }
         : {})
     }))!
     if (credentialChanged) {
@@ -249,9 +256,12 @@ export function enableAccountChineseModels(id: number): Promise<Account> {
       if (!workspaceId) throw new Error('无法获取账号的 workspace ID，请先刷新账号')
 
       await toggleChineseModels(account.auth_cookie, workspaceId, true)
+      const checkedAt = new Date().toISOString()
       const updated = (await updateAccount(id, {
-        chinese_models_enabled_at: new Date().toISOString(),
-        chinese_models_enable_error: null
+        chinese_models_enabled_at: checkedAt,
+        chinese_models_enable_error: null,
+        chinese_models_checked_at: checkedAt,
+        chinese_models_manual_off_at: null
       }))!
       void logOperation({
         operation: 'enable_chinese_models',
@@ -264,7 +274,10 @@ export function enableAccountChineseModels(id: number): Promise<Account> {
       return updated
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      await updateAccount(id, { chinese_models_enable_error: message }).catch(() => {})
+      await updateAccount(id, {
+        chinese_models_enable_error: message,
+        chinese_models_checked_at: new Date().toISOString()
+      }).catch(() => {})
       void logOperation({
         operation: 'enable_chinese_models',
         trigger_type: 'api',
@@ -283,18 +296,27 @@ export function toggleAccountChineseModels(id: number, enable: boolean): Promise
     const account = await ensureAccountIpAssignment(id)
     if (!account) throw createError({ statusCode: 404, statusMessage: 'Account not found' })
 
+    const now = new Date().toISOString()
     try {
       const workspaceId = account.workspace_id
       if (!workspaceId) throw new Error('无法获取账号的 workspace ID，请先刷新账号')
 
       await toggleChineseModels(account.auth_cookie, workspaceId, enable)
       return (await updateAccount(id, {
-        chinese_models_enabled_at: enable ? new Date().toISOString() : null,
-        chinese_models_enable_error: null
+        chinese_models_enabled_at: enable ? now : null,
+        chinese_models_enable_error: null,
+        chinese_models_checked_at: now,
+        // 以用户最近一次意图为准：手动开启清除手动关闭标记，手动关闭写入标记。
+        // 手动开启即使本次失败也清除标记，避免把自动开启逻辑永久锁死。
+        chinese_models_manual_off_at: enable ? null : now
       }))!
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      await updateAccount(id, { chinese_models_enable_error: message }).catch(() => {})
+      await updateAccount(id, {
+        chinese_models_enable_error: message,
+        chinese_models_checked_at: now,
+        ...(enable ? { chinese_models_manual_off_at: null } : {})
+      }).catch(() => {})
       throw createError({ statusCode: 502, statusMessage: message })
     }
   })
@@ -349,6 +371,37 @@ async function autoEnableChineseModels(accounts: Account[]) {
       // in the account list and the user can retry with the globe action.
     }
   })
+}
+
+function autoEnableChineseModelsForAccount(account: Account) {
+  // 仅在满足全部守卫条件时自动开启：会员订阅、有 workspace、尚未开启、
+  // 未被用户手动关闭过；并按 chinese_models_checked_at 节流（1 小时内不重复、
+  // 上次失败则重试）。
+  if (
+    !AUTO_ENABLE_CHINESE_MODELS ||
+    account.subscription_status !== 'active' ||
+    !account.workspace_id ||
+    account.chinese_models_enabled_at ||
+    account.chinese_models_manual_off_at
+  ) return
+  const checkedAt = account.chinese_models_checked_at
+    ? new Date(account.chinese_models_checked_at).getTime()
+    : 0
+  const needsCheck =
+    !account.chinese_models_checked_at ||
+    Boolean(account.chinese_models_enable_error) ||
+    !Number.isFinite(checkedAt) ||
+    Date.now() - checkedAt >= 60 * 60 * 1000
+  if (!needsCheck) return
+  // fire-and-forget：刷新结果不受影响，失败时 enableAccountChineseModels 已
+  // 写入错误与检查时间，下次刷新或定时轮询会自动重试。
+  void (async () => {
+    try {
+      await enableAccountChineseModels(account.id)
+    } catch {
+      // 忽略：错误已写入 chinese_models_enable_error
+    }
+  })()
 }
 
 export async function expandAccountWorkspacesByIds(ids: number[]) {
@@ -601,7 +654,13 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
         : quota.exhausted.length
           ? `quota:${quota.exhausted.join(',')}`
           : null
-    const wasFirstSync = currentAccount.status === 'pending' && status === 'active'
+    // 抛弃账号标记：风控命中或月限额≥100% 自动标记；手动标记过的永不被动改。
+    // 用最新抓取的 monthlyUsage 判定；若本次抓取缺失（null），沿用已入库的旧值，
+    // 避免一次抓取抖动就误把抛弃账号临时解除回主列表。
+    const monthlyExhausted = typeof info.monthlyUsage === 'number'
+      ? info.monthlyUsage >= 100
+      : typeof currentAccount.monthly_usage === 'number' && currentAccount.monthly_usage >= 100
+    const autoAbandoned = disabledReason === 'risk_control' || monthlyExhausted
     const saved = (await updateAccount(id, {
       email: resolveRefreshedAccountEmail(info.email, account.email),
       workspace_id: info.workspaceId,
@@ -628,42 +687,15 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
       status,
       disabled_reason: disabledReason,
       auto_enable_at: disabledReason?.startsWith('quota:') ? quota.autoEnableAt : null,
+      ...(currentAccount.abandoned_reason !== 'manual' ? {
+        is_abandoned: autoAbandoned,
+        abandoned_reason: autoAbandoned ? (disabledReason === 'risk_control' ? 'risk_control' : 'monthly_limit') : null
+      } : {}),
       last_error: protectedDisabledReason === RISK_CONTROL_DISABLED_REASON
         ? currentAccount.last_error
         : referralError,
       last_synced_at: now.toISOString()
     }))!
-    // On first successful sync: auto-cancel renewal and auto-enable chinese models in background.
-    if (wasFirstSync) {
-      void (async () => {
-        try {
-          if (!saved.subscription_cancelled_at && saved.subscription_status === 'active') {
-            await cancelAccountRenewal(id).catch(err => {
-              void logOperation({
-                operation: 'cancel_renewal',
-                trigger_type: 'scheduled',
-                account_id: id,
-                status: 'error',
-                error_message: err instanceof Error ? err.message : String(err)
-              })
-            })
-          }
-          if (!saved.chinese_models_enabled_at) {
-            await enableAccountChineseModels(id).catch(err => {
-              void logOperation({
-                operation: 'enable_chinese_models',
-                trigger_type: 'scheduled',
-                account_id: id,
-                status: 'error',
-                error_message: err instanceof Error ? err.message : String(err)
-              })
-            })
-          }
-        } catch {
-          // background task; never propagate
-        }
-      })()
-    }
     void logOperation({
       operation: 'refresh_account',
       trigger_type: 'scheduled',
@@ -671,6 +703,10 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
       status: 'success',
       detail: `账号 #${id} 刷新成功，状态：${status}`
     })
+    // 刷新成功后，若为会员则后台自动开启中国模型（fire-and-forget，受节流约束）。
+    if (saved.subscription_status === 'active') {
+      autoEnableChineseModelsForAccount(saved)
+    }
     return saved
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
@@ -710,7 +746,7 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
 }
 
 export async function refreshAllAccounts() {
-  const accounts = (await listAccounts()).filter(a => a.disabled_reason !== 'manual')
+  const accounts = (await listAccounts()).filter(a => a.disabled_reason !== 'manual' && !a.is_abandoned)
   return mapConcurrent(accounts, REFRESH_CONCURRENCY, account => refreshAccount(account.id))
 }
 
@@ -751,7 +787,11 @@ export async function markAccountRiskControlled(
     risk_control_detected_at: account.disabled_reason === RISK_CONTROL_DISABLED_REASON
       ? account.risk_control_detected_at || now
       : now,
-    last_error: message || 'Request blocked by upstream provider.'
+    last_error: message || 'Request blocked by upstream provider.',
+    ...(account.abandoned_reason !== 'manual' ? {
+      is_abandoned: true,
+      abandoned_reason: 'risk_control'
+    } : {})
   }))!
   await updateAccountPollSchedule(updated)
   return updated
@@ -816,12 +856,19 @@ export function checkAccountRiskControl(id: number): Promise<RiskControlCheckRes
         `Upstream API key rejected (status ${response.status}); cached key cleared.`
       ))!
     } else if (response.ok && account.disabled_reason === RISK_CONTROL_DISABLED_REASON) {
+      // 风控解除：恢复正常状态。但若月限额仍≥100%，保留抛弃标记为 monthly_limit，
+      // 避免与 refreshAccountOnce 的判定不一致导致短暂错误解除。
+      const stillMonthlyExhausted = typeof account.monthly_usage === 'number' && account.monthly_usage >= 100
       updated = (await updateAccount(id, {
         status: 'active',
         disabled_reason: null,
         auto_enable_at: null,
         risk_control_checked_at: checkedAt,
-        last_error: null
+        last_error: null,
+        ...(account.abandoned_reason !== 'manual' ? {
+          is_abandoned: stillMonthlyExhausted,
+          abandoned_reason: stillMonthlyExhausted ? 'monthly_limit' : null
+        } : {})
       }))!
       await updateAccountPollSchedule(updated)
     } else {

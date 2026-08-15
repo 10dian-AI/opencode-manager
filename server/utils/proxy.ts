@@ -77,7 +77,7 @@ function affinityIndex(affinityKey: string, accountCount: number): number {
   const hash = createHash('sha256').update(affinityKey).digest()
   // Read the first 4 bytes as a big-endian uint32 and modulo
   const val = (hash[0]! << 24) | (hash[1]! << 16) | (hash[2]! << 8) | hash[3]!
-  return Math.abs(val) % accountCount
+  return (val >>> 0) % accountCount
 }
 
 /**
@@ -99,11 +99,14 @@ async function waitForAccountSlotAffinity(signal: AbortSignal, affinityKey: stri
   while (!signal.aborted) {
     const accounts = await getProxyCandidates()
     if (!accounts.length) return null
-    // Use the affinity key to pick a deterministic starting account
-    const start = affinityIndex(affinityKey, accounts.length)
+    // 亲和索引基于稳定的 id 排序计算，避免候选列表按 subscription_ends_at
+    // 排序变化导致同一个 key 漂移到不同账号。
+    const ordered = [...accounts].sort((a, b) => a.id - b.id)
+    const affinityAccount = ordered[affinityIndex(affinityKey, ordered.length)]!
+    const start = accounts.findIndex(account => account.id === affinityAccount.id)
     // Try affinity account first, then fall back to the rest in order
     for (let attempt = 0; attempt < accounts.length; attempt++) {
-      const account = accounts[(start + attempt) % accounts.length]!
+      const account = accounts[(Math.max(0, start) + attempt) % accounts.length]!
       const release = await tryAcquireAccountProxySlot(
         account.id,
         PROXY_ACCOUNT_CONCURRENCY,
