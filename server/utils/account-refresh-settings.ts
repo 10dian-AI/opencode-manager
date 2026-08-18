@@ -5,6 +5,7 @@ const DEFAULT_AUTO_REFRESH_ERRORS = true
 
 export interface AccountRefreshSettings {
   auto_refresh_errors: boolean
+  error_refresh_interval_seconds: number
   error_refresh_interval_minutes: number
 }
 
@@ -19,7 +20,8 @@ export async function getAccountRefreshSettings(): Promise<AccountRefreshSetting
     auto_refresh_errors: stored === undefined
       ? DEFAULT_AUTO_REFRESH_ERRORS
       : stored === 'true',
-    error_refresh_interval_minutes: 5
+    error_refresh_interval_seconds: 5,
+    error_refresh_interval_minutes: 5 / 60
   }
 }
 

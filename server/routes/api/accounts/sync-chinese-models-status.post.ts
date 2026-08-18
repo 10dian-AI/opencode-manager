@@ -14,8 +14,12 @@ export default defineEventHandler(async (event) => {
 
   for (const account of eligibleAccounts) {
     try {
-      await refreshAccount(account.id, { throwOnError: false })
-      synchronized++
+      const refreshed = await refreshAccount(account.id)
+      if (refreshed.status === 'error' || refreshed.disabled_reason === 'auth_expired') {
+        failed++
+      } else {
+        synchronized++
+      }
     } catch (error) {
       failed++
       console.error(`Failed to sync chinese models status for account ${account.id}:`, error)

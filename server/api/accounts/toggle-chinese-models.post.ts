@@ -9,7 +9,10 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: 'account_id is required' })
   }
 
-  const enable = Boolean(body?.enable)
+  if (typeof body?.enable !== 'boolean') {
+    throw createError({ statusCode: 400, statusMessage: 'enable (boolean) is required' })
+  }
+  const enable = body.enable
   const account = await toggleAccountChineseModels(accountId, enable)
 
   return {

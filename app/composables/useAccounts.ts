@@ -152,7 +152,8 @@ export interface AccountBatchResult extends AccountBatchProgress {
 
 export interface AccountRefreshSettings {
   auto_refresh_errors: boolean
-  error_refresh_interval_minutes: number
+  error_refresh_interval_seconds: number
+  error_refresh_interval_minutes?: number
 }
 
 export function useAccounts() {

@@ -1,35 +1,23 @@
+import { QUOTA_LIMITS_USD, remainingAmount } from '../../utils/quota'
+
 export default defineEventHandler(async (event) => {
   await requireAuth(event)
 
   const accounts = await listAccounts()
-
-  // Filter accounts with available monthly quota
-  const accountsWithQuota = await Promise.all(
-    accounts
-      .filter(account =>
-        account.status === 'active' &&
-        account.subscription_status === 'active' &&
-        account.upstream_api_key
-      )
-      .map(async (account) => {
-        // Calculate remaining monthly quota
-        const monthlyLimit = 100 // Assuming $100 monthly limit
-        const weeklyUsage = account.weekly_usage || 0
-        const monthlyRemaining = Math.max(0, monthlyLimit - weeklyUsage)
-
-        if (monthlyRemaining > 0) {
-          return {
-            id: account.id,
-            name: account.name || account.email || `账号 #${account.id}`,
-            api_key: account.upstream_api_key,
-            monthly_remaining: monthlyRemaining
-          }
-        }
-        return null
-      })
-  )
-
-  const validAccounts = accountsWithQuota.filter(acc => acc !== null)
+  const validAccounts = accounts
+    .filter(account =>
+      !account.is_abandoned &&
+      account.status === 'active' &&
+      account.subscription_status === 'active' &&
+      Boolean(account.upstream_api_key) &&
+      remainingAmount(account.monthly_usage, QUOTA_LIMITS_USD.monthly) > 0
+    )
+    .map(account => ({
+      id: account.id,
+      name: account.name || account.email || `账号 #${account.id}`,
+      api_key: account.upstream_api_key!,
+      monthly_remaining: remainingAmount(account.monthly_usage, QUOTA_LIMITS_USD.monthly)
+    }))
 
   return {
     total: validAccounts.length,

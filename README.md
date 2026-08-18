@@ -17,7 +17,7 @@ OpenCode Manager 是一个账号池管理工具。你可以批量导入 OpenCode
 - 出口 IP 池：HTTP/HTTPS/SOCKS5 代理批量导入、连通性检测、稳定分块绑定
 - OpenAI 兼容的 `/v1/models`、`/v1/chat/completions`（支持流式透传）
 - 支持单号或全量风控检测
-- 自动取消续费（默认开启）；自动开启中国模型（默认开启）
+- 自动取消续费（直接运行默认开启，Docker Compose 默认关闭）；自动开启中国模型（默认开启）
 - 额度耗尽自动禁用并在窗口释放后恢复；会员过期自动禁用
 - 操作日志：记录账号关键操作及结果，支持分页和筛选
 - 调用日志：记录每次代理请求详情
@@ -174,7 +174,7 @@ curl -H "Authorization: Bearer sk-ocm-your-key" \
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `AUTO_CANCEL_SUBSCRIPTION_RENEWAL` | 首次同步后自动取消续费 | `true` |
+| `AUTO_CANCEL_SUBSCRIPTION_RENEWAL` | 首次同步后自动取消续费 | 直接运行 `true`；Docker Compose `false` |
 | `AUTO_ENABLE_CHINESE_MODELS` | 首次同步后自动开启中国模型 | `true` |
 | `AUTO_APPLY_REFERRAL_REWARDS` | 自动使用推广收益 | `false` |
 | `RISK_CONTROL_CHECK_MODEL` | 风控检测使用的探测模型 | `glm-5.2` |
@@ -204,10 +204,10 @@ curl -H "Authorization: Bearer sk-ocm-your-key" \
 - 使用内存轮询号池，单次请求只访问一个上游账户；workspace 页面遇到 408、429、5xx 或网络超时会有限重试
 - 支持单号或全量风控检测；普通代理请求的 401/403 只会清理失效 Key，不再自动判定封禁
 - 支持手动使用推广收益；自动使用默认关闭，可通过环境变量显式开启
-- 支持手动关闭续费；自动关闭续费默认关闭，可通过环境变量显式开启
+- 支持手动关闭续费；直接运行时自动关闭续费默认开启，Docker Compose 默认关闭，可通过环境变量覆盖
 - 额度耗尽自动禁用并在窗口释放后恢复，会员过期自动禁用
 - 记录三个额度窗口的绝对刷新节点，按节点自动刷新
-- 可在「号池」开启或关闭 `error` 账号自动重试，开启后默认每 5 分钟重试一次
+- 可在「号池」开启或关闭 `error` 账号自动重试，开启后默认约每 5 秒重试一次
 - 非会员筛选与批量删除
 - 按滚动 $12、每周 $30、每月 $60 统计金额
 

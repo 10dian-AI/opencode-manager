@@ -34,6 +34,26 @@ export function remainingAmount(usagePercent: number | null | undefined, limit: 
   return Math.round((remainingPercent(usagePercent) / 100) * limit * 100) / 100
 }
 
+/**
+ * Return the amount that is actually usable before any known quota window is
+ * exhausted. Unknown windows are excluded from the minimum; if every window
+ * is unknown, return 0 so callers do not advertise an unverified balance.
+ */
+export function effectiveRemainingAmount(
+  snapshot: Pick<QuotaSnapshot, 'rollingUsage' | 'weeklyUsage' | 'monthlyUsage'>,
+  limits: typeof QUOTA_LIMITS_USD = QUOTA_LIMITS_USD
+) {
+  const windows = [
+    { usage: snapshot.rollingUsage, limit: limits.rolling },
+    { usage: snapshot.weeklyUsage, limit: limits.weekly },
+    { usage: snapshot.monthlyUsage, limit: limits.monthly }
+  ]
+  const known = windows
+    .filter(window => typeof window.usage === 'number' && Number.isFinite(window.usage))
+    .map(window => remainingAmount(window.usage, window.limit))
+  return known.length ? Math.min(...known) : 0
+}
+
 export function analyzeQuota(snapshot: QuotaSnapshot) {
   const windows = [
     { name: 'rolling' as const, usage: snapshot.rollingUsage, resetAt: snapshot.rollingResetAt },

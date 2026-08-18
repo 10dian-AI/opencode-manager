@@ -311,6 +311,7 @@ export async function proxyChatCompletions(
           const reader = response.body.getReader()
           let released = false
           const decoder = new TextDecoder()
+          let sseBuffer = ''
 
           const finish = () => {
             if (released) return
@@ -335,27 +336,27 @@ export async function proxyChatCompletions(
                   // Log the streaming call
                   void logCallCompletion(apiKeyInfo, logData, callerIp, startTime)
                 } else {
-                  // Record first token time
-                  if (!firstTokenRecorded) {
-                    logData.firstTokenTime = Date.now() - firstTokenStartTime
-                    firstTokenRecorded = true
-                  }
-
-                  // Try to extract token usage from SSE data
-                  const text = decoder.decode(chunk.value, { stream: true })
-                  const lines = text.split('\n')
+                  // SSE events may be split across network chunks. Keep the
+                  // incomplete line until the next chunk and only record the
+                  // first-token timestamp for an actual data event.
+                  sseBuffer += decoder.decode(chunk.value, { stream: true })
+                  const lines = sseBuffer.split(/\r?\n/)
+                  sseBuffer = lines.pop() || ''
                   for (const line of lines) {
-                    if (line.startsWith('data: ') && !line.includes('[DONE]')) {
-                      try {
-                        const data = JSON.parse(line.slice(6))
-                        if (data.usage) {
-                          logData.promptTokens = data.usage.prompt_tokens || null
-                          logData.completionTokens = data.usage.completion_tokens || null
-                          logData.cachedPromptTokens = data.usage.prompt_tokens_details?.cached_tokens || null
-                          logData.createdPromptTokens = data.usage.prompt_tokens_details?.created_tokens || null
-                        }
-                      } catch {}
+                    if (!line.startsWith('data: ') || line.includes('[DONE]')) continue
+                    if (!firstTokenRecorded) {
+                      logData.firstTokenTime = Date.now() - firstTokenStartTime
+                      firstTokenRecorded = true
                     }
+                    try {
+                      const data = JSON.parse(line.slice(6))
+                      if (data.usage) {
+                        logData.promptTokens = data.usage.prompt_tokens || null
+                        logData.completionTokens = data.usage.completion_tokens || null
+                        logData.cachedPromptTokens = data.usage.prompt_tokens_details?.cached_tokens || null
+                        logData.createdPromptTokens = data.usage.prompt_tokens_details?.created_tokens || null
+                      }
+                    } catch {}
                   }
 
                   controller.enqueue(chunk.value)
@@ -412,6 +413,12 @@ export async function proxyChatCompletions(
       logData.errorMessage = '客户端已关闭请求'
       await logCallCompletion(apiKeyInfo, logData, callerIp, startTime)
       return jsonError(499, '客户端已关闭请求', 'client_closed_request')
+    }
+    if (upstreamTimeoutSignal.aborted) {
+      logData.statusCode = 504
+      logData.errorMessage = '上游请求超时'
+      await logCallCompletion(apiKeyInfo, logData, callerIp, startTime)
+      return jsonError(504, '上游请求超时', 'upstream_timeout')
     }
     if (error instanceof ProxyQueueTimeoutError) {
       logData.statusCode = 503

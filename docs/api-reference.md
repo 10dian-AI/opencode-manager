@@ -120,8 +120,8 @@ curl -s -b cookies.txt -X POST http://localhost:3030/api/accounts/add \
 | `accounts[].is_available` | 是否可用于代理请求（active + 订阅有效 + 有 API Key） |
 | `accounts[].disabled_reason` | 禁用原因：`manual`、`auth_expired`、`expired`、`quota:rolling` 等 |
 | `accounts[].cooldown_seconds` | 额度恢复前的剩余秒数（仅 quota 禁用时有值） |
-| `accounts[].remaining_quota` | 预估剩余可用额度（USD），取 5h 与周限制的最小值 |
-| `accounts[].rolling_usage` | 当前滚动窗口已用额度（USD） |
+| `accounts[].remaining_quota` | 预估剩余可用额度（USD），取滚动、周、月三个窗口剩余值的最小值 |
+| `accounts[].rolling_usage` | 当前滚动窗口使用率（百分比） |
 
 ### curl 示例
 

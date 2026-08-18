@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   analyzeQuota,
+  effectiveRemainingAmount,
   QUOTA_LIMITS_USD,
   remainingAmount,
   remainingPercent,
@@ -21,6 +22,24 @@ describe('quota accounting', () => {
     expect(remainingPercent(120)).toBe(0)
     expect(remainingAmount(25, 12)).toBe(9)
     expect(remainingAmount(null, 12)).toBe(0)
+  })
+
+  test('uses the most constrained known quota window', () => {
+    expect(effectiveRemainingAmount({
+      rollingUsage: 50,
+      weeklyUsage: 10,
+      monthlyUsage: 25
+    })).toBe(6)
+    expect(effectiveRemainingAmount({
+      rollingUsage: null,
+      weeklyUsage: 50,
+      monthlyUsage: null
+    })).toBe(15)
+    expect(effectiveRemainingAmount({
+      rollingUsage: null,
+      weeklyUsage: null,
+      monthlyUsage: null
+    })).toBe(0)
   })
 
   test('records absolute reset nodes and chooses the exhausted window release', () => {

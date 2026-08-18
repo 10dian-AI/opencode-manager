@@ -62,7 +62,7 @@ describe('account polling schedule', () => {
     expect(schedule.takeDue('membership', NOW + 15 * 60_000)).toEqual([1])
   })
 
-  test('retries error accounts five minutes after their last failed sync', () => {
+  test('retries error accounts five seconds after their last failed sync', () => {
     const schedule = new AccountPollSchedule()
     schedule.hydrate([account(1, { status: 'error' })], NOW)
 

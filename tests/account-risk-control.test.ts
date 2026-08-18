@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import {
   inspectRiskControlResponse,
-  isProtectedAccountDisabledReason
+  isProtectedAccountDisabledReason,
+  resolveRiskControlRestoreState
 } from '../server/utils/account-risk-control'
 
 describe('account risk control', () => {
@@ -37,5 +38,46 @@ describe('account risk control', () => {
     expect(isProtectedAccountDisabledReason('auth_expired')).toBe(true)
     expect(isProtectedAccountDisabledReason('quota:weekly')).toBe(false)
     expect(isProtectedAccountDisabledReason(null)).toBe(false)
+  })
+  test('restores risk-controlled accounts according to their cached quota state', () => {
+    const base = {
+      subscription_status: 'active',
+      rolling_reset_at: '2026-08-18T01:00:00.000Z',
+      weekly_reset_at: '2026-08-19T00:00:00.000Z',
+      monthly_reset_at: '2026-09-01T00:00:00.000Z'
+    }
+
+    expect(resolveRiskControlRestoreState({
+      ...base,
+      rolling_usage: 100,
+      weekly_usage: 20,
+      monthly_usage: 10
+    })).toMatchObject({
+      status: 'disabled',
+      disabledReason: 'quota:rolling',
+      monthlyExhausted: false
+    })
+
+    expect(resolveRiskControlRestoreState({
+      ...base,
+      rolling_usage: 20,
+      weekly_usage: 20,
+      monthly_usage: 100
+    })).toMatchObject({
+      status: 'disabled',
+      disabledReason: 'quota:monthly',
+      monthlyExhausted: true
+    })
+
+    expect(resolveRiskControlRestoreState({
+      ...base,
+      subscription_status: 'inactive',
+      rolling_usage: 20,
+      weekly_usage: 20,
+      monthly_usage: 20
+    })).toMatchObject({
+      status: 'disabled',
+      disabledReason: 'expired'
+    })
   })
 })

@@ -169,4 +169,4 @@ Cookie: session=<token>
 | `active` | Accounts available for proxying |
 | `is_available` | `true` when active + member + has API key |
 | `cooldown_seconds` | Seconds until quota window resets |
-| `remaining_quota` | Estimated remaining quota in USD |
+| `remaining_quota` | Estimated remaining quota in USD, using the minimum remaining amount across rolling, weekly, and monthly windows |

@@ -222,7 +222,7 @@ async function onAutoRefreshErrors(value: boolean) {
     await setAutoRefreshErrors(value)
     toast.add({
       title: value ? '已开启 error 账号自动刷新' : '已关闭 error 账号自动刷新',
-      description: value ? '失败账号每 5 分钟自动重试' : '失败账号将只在手动刷新时重试',
+      description: value ? '失败账号约每 5 秒自动重试' : '失败账号将只在手动刷新时重试',
       color: 'success'
     })
   } catch (e: any) {

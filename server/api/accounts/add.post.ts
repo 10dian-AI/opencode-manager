@@ -2,25 +2,26 @@ export default defineEventHandler(async (event) => {
   await requireAuth(event)
 
   const body = await readBody(event)
-
-  if (!body.auth_cookie || typeof body.auth_cookie !== 'string') {
+  let authCookie: string
+  try {
+    authCookie = validateAuthCookieValue(body?.auth_cookie)
+  } catch (error) {
     throw createError({
       statusCode: 400,
-      statusMessage: 'auth_cookie is required'
+      statusMessage: error instanceof Error ? error.message : 'Invalid auth cookie value'
     })
   }
 
   const startTime = Date.now()
   try {
-    const account = await createAccount({
+    const account = await withAuthCookieLocks([authCookie], () => createAccount({
       name: body.name,
-      auth_cookie: body.auth_cookie,
+      auth_cookie: authCookie,
       workspace_id: body.workspace_id,
       workspace_name: body.workspace_name,
       allow_existing_cookie: false
-    })
+    }))
 
-    // Trigger initial refresh
     void refreshAccount(account.id).catch(() => {})
 
     void logOperation({
@@ -41,19 +42,14 @@ export default defineEventHandler(async (event) => {
       operation: 'add_account',
       trigger_type: 'api',
       status: 'error',
-      error_message: error.message || '添加账号失败',
+      error_message: error?.message || '添加账号失败',
       duration_ms: Date.now() - startTime
     })
 
-    if (error.statusCode === 409) {
-      throw createError({
-        statusCode: 409,
-        statusMessage: '该 Cookie 已存在'
-      })
-    }
+    if (error?.statusCode) throw error
     throw createError({
       statusCode: 500,
-      statusMessage: error.message || '添加账号失败'
+      statusMessage: error instanceof Error ? error.message : '添加账号失败'
     })
   }
 })

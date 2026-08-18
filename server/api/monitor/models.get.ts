@@ -1,39 +1,37 @@
 export default defineEventHandler(async () => {
-  // Get logs from last 5 hours
+  // Get logs from last 5 hours. queryCallLogs caps page size at 500, so use
+  // the database aggregate path below instead of silently truncating results.
   const fiveHoursAgo = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString()
+  const db = await getDb()
+  const { rows } = await db.query<{
+    model: string | null
+    total: number
+    success: number
+  }>(`
+    SELECT
+      model_name AS model,
+      COUNT(*)::int AS total,
+      COUNT(*) FILTER (
+        WHERE status_code >= 200 AND status_code < 300
+      )::int AS success
+    FROM call_logs
+    WHERE timestamp >= $1
+    GROUP BY model_name
+    ORDER BY total DESC
+  `, [fiveHoursAgo])
 
-  const result = await queryCallLogs({
-    startTime: fiveHoursAgo,
-    limit: 10000 // Get all logs from last 5 hours
-  })
-
-  // Group by model and calculate success rate
-  const modelStats: Record<string, { total: number; success: number; errors: number }> = {}
-
-  for (const log of result.logs) {
-    const model = log.model_name || 'unknown'
-    if (!modelStats[model]) {
-      modelStats[model] = { total: 0, success: 0, errors: 0 }
-    }
-    modelStats[model].total++
-    if (log.status_code && log.status_code >= 200 && log.status_code < 300) {
-      modelStats[model].success++
-    } else {
-      modelStats[model].errors++
-    }
-  }
-
-  // Convert to array with success rate
-  const models = Object.entries(modelStats).map(([model, stats]) => ({
-    model,
-    total: stats.total,
-    success: stats.success,
-    errors: stats.errors,
-    success_rate: stats.total > 0 ? (stats.success / stats.total) * 100 : 0
+  const models = rows.map(row => ({
+    model: row.model || 'unknown',
+    total: Number(row.total),
+    success: Number(row.success),
+    errors: Number(row.total) - Number(row.success),
+    success_rate: Number(row.total) > 0
+      ? (Number(row.success) / Number(row.total)) * 100
+      : 0
   }))
 
   return {
     period_hours: 5,
-    models: models.sort((a, b) => b.total - a.total)
+    models
   }
 })

@@ -1,48 +1,60 @@
 import type { Account } from '../utils/db'
+import {
+  effectiveRemainingAmount,
+  QUOTA_LIMITS_USD,
+  remainingAmount,
+  remainingPercent
+} from '../utils/quota'
 
 export default defineEventHandler(async (event) => {
   await requireAuth(event)
   const accounts = await listAccounts()
 
-  const members = accounts.filter(account => account.subscription_status === 'active')
-  const availableAccounts = accounts.filter(account => account.status === 'active')
-  const availableMembers = members.filter(account =>
+  const members = accounts.filter(account =>
+    !account.is_abandoned && account.subscription_status === 'active'
+  )
+  const availableAccounts = accounts.filter(account =>
+    !account.is_abandoned &&
     account.status === 'active' &&
-    account.disabled_reason !== 'risk_control' &&
+    account.subscription_status === 'active' &&
+    Boolean(account.upstream_api_key)
+  )
+  const availableMembers = availableAccounts.filter(account =>
     typeof account.monthly_usage === 'number' &&
     Number.isFinite(account.monthly_usage) &&
     account.monthly_usage < 100
   )
-  const riskControlled = accounts.filter(account =>
-    account.disabled_reason === 'risk_control'
+  const abnormalAccounts = accounts.filter(account =>
+    account.status === 'error' || account.disabled_reason === 'risk_control'
   )
   const nonMembers = accounts.filter(account =>
-    account.subscription_status !== null && account.subscription_status !== 'active'
+    !account.is_abandoned &&
+    account.subscription_status !== null &&
+    account.subscription_status !== 'active'
   )
   const abandoned = accounts.filter(account => account.is_abandoned)
 
-  // For each available member, effective remaining = min(5h remaining, weekly remaining, monthly remaining)
-  // This reflects the true usable quota before hitting any window limit.
-  const effectiveRemainingAmounts = availableMembers.map(a =>
-    effectiveRemainingAmount(a, QUOTA_LIMITS_USD)
-  )
   const totalEffectiveRemaining = Math.round(
-    effectiveRemainingAmounts.reduce((sum, v) => sum + v, 0) * 100
+    availableMembers.reduce((sum, account) => sum + effectiveRemainingAmount({
+      rollingUsage: account.rolling_usage,
+      weeklyUsage: account.weekly_usage,
+      monthlyUsage: account.monthly_usage
+    }), 0) * 100
   ) / 100
 
   return {
     total: accounts.length,
     active: availableAccounts.length,
-    error: riskControlled.length,
-    disabled: accounts.filter(a => a.status === 'disabled').length,
-    pending: accounts.filter(a => a.status === 'pending').length,
+    error: abnormalAccounts.length,
+    disabled: accounts.filter(account => account.status === 'disabled').length,
+    pending: accounts.filter(account => account.status === 'pending').length,
     members: members.length,
     nonMembers: nonMembers.length,
     abandoned: abandoned.length,
     available: availableMembers.length,
-    avgRollingRemaining: avgRemaining(availableMembers.map(a => a.rolling_usage)),
-    avgWeeklyRemaining: avgRemaining(availableMembers.map(a => a.weekly_usage)),
-    avgMonthlyRemaining: avgRemaining(availableMembers.map(a => a.monthly_usage)),
+    avgRollingRemaining: avgRemaining(availableMembers.map(account => account.rolling_usage)),
+    avgWeeklyRemaining: avgRemaining(availableMembers.map(account => account.weekly_usage)),
+    avgMonthlyRemaining: avgRemaining(availableMembers.map(account => account.monthly_usage)),
     totalBalance: availableAccounts.reduce((sum, account) => sum + (account.balance || 0), 0),
     rollingRemainingAmount: sumRemaining(availableMembers, 'rolling_usage', QUOTA_LIMITS_USD.rolling),
     weeklyRemainingAmount: sumRemaining(availableMembers, 'weekly_usage', QUOTA_LIMITS_USD.weekly),
@@ -53,26 +65,6 @@ export default defineEventHandler(async (event) => {
     totalEffectiveRemaining
   }
 })
-
-/**
- * Effective remaining for one account = min of all three window remainders.
- * If a window's usage is unknown, it is excluded from the min (treated as unlimited).
- * If all windows are unknown, returns 0.
- */
-function effectiveRemainingAmount(
-  account: Account,
-  limits: typeof QUOTA_LIMITS_USD
-): number {
-  const windows = [
-    { usage: account.rolling_usage, limit: limits.rolling },
-    { usage: account.weekly_usage, limit: limits.weekly },
-    { usage: account.monthly_usage, limit: limits.monthly }
-  ]
-  const known = windows
-    .filter(w => typeof w.usage === 'number' && Number.isFinite(w.usage))
-    .map(w => remainingAmount(w.usage, w.limit))
-  return known.length ? Math.min(...known) : 0
-}
 
 function sumRemaining(
   accounts: Account[],

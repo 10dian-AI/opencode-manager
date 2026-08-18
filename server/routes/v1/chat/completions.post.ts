@@ -3,10 +3,9 @@ export default defineEventHandler(async (event) => {
     const apiKeyInfo = await requireApiKey(event)
     return await proxyChatCompletions(event, apiKeyInfo)
   } catch (error) {
-    // Ensure OpenAI-compatible error format
-    const statusCode = (error as any)?.statusCode || 500
-    const message = (error as any)?.message || 'Internal server error'
-
+    const statusCode = Number((error as any)?.statusCode) || 500
+    const message = (error as any)?.statusMessage || (error as any)?.message || 'Internal server error'
+    setResponseStatus(event, statusCode)
     return {
       error: {
         message,

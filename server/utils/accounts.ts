@@ -18,6 +18,7 @@ import { logOperation } from './operation-log'
 import {
   inspectRiskControlResponse,
   isProtectedAccountDisabledReason,
+  resolveRiskControlRestoreState,
   RISK_CONTROL_DISABLED_REASON
 } from './account-risk-control'
 import {
@@ -32,6 +33,7 @@ import {
 } from './referral-reward-cache'
 
 const accountRefreshes = new Map<number, Promise<Account>>()
+const accountRetryTimers = new Map<number, ReturnType<typeof setTimeout>>()
 const accountOperations = new AccountOperationQueue()
 const accountPollSchedule = new AccountPollSchedule()
 let accountPollScheduleHydrated = false
@@ -42,6 +44,34 @@ const AUTO_CANCEL_SUBSCRIPTION_RENEWAL = process.env.AUTO_CANCEL_SUBSCRIPTION_RE
 const AUTO_ENABLE_CHINESE_MODELS = process.env.AUTO_ENABLE_CHINESE_MODELS !== 'false'
 
 let accountPollScheduleHydration: Promise<void> | null = null
+
+function cancelErrorAccountRetry(id: number) {
+  const timer = accountRetryTimers.get(id)
+  if (!timer) return
+  clearTimeout(timer)
+  accountRetryTimers.delete(id)
+}
+
+function scheduleErrorAccountRetry(id: number) {
+  if (accountRetryTimers.has(id)) return
+  const timer = setTimeout(async () => {
+    accountRetryTimers.delete(id)
+    const [account, settings] = await Promise.all([
+      getAccount(id).catch(() => undefined),
+      getAccountRefreshSettings().catch(() => undefined)
+    ])
+    if (
+      !settings?.auto_refresh_errors ||
+      !account ||
+      account.status !== 'error' ||
+      account.disabled_reason === 'auth_expired' ||
+      account.disabled_reason === 'manual'
+    ) return
+    await refreshAccount(id).catch(() => {})
+  }, ERROR_REFRESH_INTERVAL_MS)
+  timer.unref?.()
+  accountRetryTimers.set(id, timer)
+}
 
 function runAccountOperation<T>(id: number, operation: () => Promise<T>) {
   return accountOperations.run(id, async () => {
@@ -84,6 +114,7 @@ export async function updateAccountPollSchedule(account: Account) {
 }
 
 export async function removeAccountPollSchedule(id: number) {
+  cancelErrorAccountRetry(id)
   await ensureAccountPollSchedule()
   accountPollSchedule.remove(id)
   removeCachedReferralRewards(id)
@@ -255,7 +286,8 @@ export function enableAccountChineseModels(id: number): Promise<Account> {
       const workspaceId = account.workspace_id
       if (!workspaceId) throw new Error('无法获取账号的 workspace ID，请先刷新账号')
 
-      await toggleChineseModels(account.auth_cookie, workspaceId, true)
+      const fetchImpl = await createAccountFetch(account)
+      await toggleChineseModels(account.auth_cookie, workspaceId, true, fetchImpl)
       const checkedAt = new Date().toISOString()
       const updated = (await updateAccount(id, {
         chinese_models_enabled_at: checkedAt,
@@ -301,7 +333,8 @@ export function toggleAccountChineseModels(id: number, enable: boolean): Promise
       const workspaceId = account.workspace_id
       if (!workspaceId) throw new Error('无法获取账号的 workspace ID，请先刷新账号')
 
-      await toggleChineseModels(account.auth_cookie, workspaceId, enable)
+      const fetchImpl = await createAccountFetch(account)
+      await toggleChineseModels(account.auth_cookie, workspaceId, enable, fetchImpl)
       return (await updateAccount(id, {
         chinese_models_enabled_at: enable ? now : null,
         chinese_models_enable_error: null,
@@ -460,13 +493,12 @@ export function refreshAccount(id: number): Promise<Account> {
     .then(async account => {
       if (account.status === 'error') {
         progress.fail(account.last_error || '账号刷新失败')
-        // Immediately schedule another refresh attempt — no delay.
-        // Fire-and-forget; the retry result updates the poll schedule itself.
         const settings = await getAccountRefreshSettings()
         if (settings.auto_refresh_errors && account.disabled_reason !== 'auth_expired' && account.disabled_reason !== 'manual') {
-          void refreshAccount(id)
+          scheduleErrorAccountRetry(id)
         }
       } else {
+        cancelErrorAccountRetry(id)
         progress.complete()
       }
       await updateAccountPollSchedule(account)
@@ -856,18 +888,18 @@ export function checkAccountRiskControl(id: number): Promise<RiskControlCheckRes
         `Upstream API key rejected (status ${response.status}); cached key cleared.`
       ))!
     } else if (response.ok && account.disabled_reason === RISK_CONTROL_DISABLED_REASON) {
-      // 风控解除：恢复正常状态。但若月限额仍≥100%，保留抛弃标记为 monthly_limit，
-      // 避免与 refreshAccountOnce 的判定不一致导致短暂错误解除。
-      const stillMonthlyExhausted = typeof account.monthly_usage === 'number' && account.monthly_usage >= 100
+      // 风控解除后重新依据已缓存的会员和额度状态计算账号状态，
+      // 不要因为风控恢复就无条件把额度已耗尽的账号放回代理池。
+      const restored = resolveRiskControlRestoreState(account)
       updated = (await updateAccount(id, {
-        status: 'active',
-        disabled_reason: null,
-        auto_enable_at: null,
+        status: restored.status,
+        disabled_reason: restored.disabledReason,
+        auto_enable_at: restored.autoEnableAt,
         risk_control_checked_at: checkedAt,
         last_error: null,
         ...(account.abandoned_reason !== 'manual' ? {
-          is_abandoned: stillMonthlyExhausted,
-          abandoned_reason: stillMonthlyExhausted ? 'monthly_limit' : null
+          is_abandoned: restored.monthlyExhausted,
+          abandoned_reason: restored.monthlyExhausted ? 'monthly_limit' : null
         } : {})
       }))!
       await updateAccountPollSchedule(updated)
