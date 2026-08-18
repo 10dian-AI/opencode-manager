@@ -1,0 +1,1 @@
+export const ERROR_REFRESH_INTERVAL_MS = 5 * 1000

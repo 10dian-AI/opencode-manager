@@ -15,8 +15,12 @@ function decodeHtmlEntities(value: string) {
 }
 
 function readAttribute(source: string, name: string) {
-  const match = source.match(new RegExp(`${name}\\s*=\\s*["']([^"']*)["']`, 'i'))
-  return match?.[1] ? decodeHtmlEntities(match[1]) : ''
+  const match = source.match(new RegExp(
+    `${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`,
+    'i'
+  ))
+  const value = match?.[1] ?? match?.[2] ?? match?.[3] ?? ''
+  return decodeHtmlEntities(value)
 }
 
 function parseChinaModelForm(html: string): ChinaModelForm | null {

@@ -18,7 +18,8 @@ export default defineNuxtConfig({
     },
     scheduledTasks: {
       '* * * * *': ['refresh-accounts', 'refresh-error-accounts'],
-      '*/15 * * * *': ['refresh-memberships', 'refresh-opencode-modules']
+      '*/15 * * * *': ['refresh-memberships', 'refresh-opencode-modules'],
+      '0 3 * * *': ['cleanup-logs']
     }
   }
 })

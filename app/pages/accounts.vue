@@ -112,6 +112,7 @@ const nonMemberCount = computed(() =>
   accounts.value.filter(account => Boolean(account.subscription_status) && account.subscription_status !== 'active').length
 )
 const riskControlledCount = computed(() =>
+  stats.value?.riskControlled ??
   accounts.value.filter(account => account.disabled_reason === 'risk_control').length
 )
 const activeSubscriptionsCount = computed(() =>
@@ -614,19 +615,23 @@ async function onCheckRiskControl(account: Account) {
 async function onCheckAllRiskControls() {
   checkingAllRiskControls.value = true
   try {
-    const ids = accounts.value
-      .filter(account =>
-        account.has_upstream_api_key &&
-        account.disabled_reason !== 'manual' &&
-        (account.status === 'active' || account.disabled_reason === 'risk_control')
-      )
-      .map(account => account.id)
+    const abandoned = await fetchAbandonedAccounts()
+    const candidates = [
+      ...new Map(
+        [...accounts.value, ...abandoned].map(account => [account.id, account])
+      ).values()
+    ].filter(account =>
+      account.has_upstream_api_key &&
+      account.disabled_reason !== 'manual' &&
+      (account.status === 'active' || account.disabled_reason === 'risk_control')
+    )
     const result = await runAccountBatch(
-      ids,
+      candidates.map(account => account.id),
       'risk-control-check',
       progress => {
         batchProgress.value = { label: '全部风控检测', ...progress }
-      }
+      },
+      abandoned
     )
     toast.add({
       title: result.blocked
@@ -643,6 +648,7 @@ async function onCheckAllRiskControls() {
   } finally {
     checkingAllRiskControls.value = false
     batchProgress.value = null
+    refreshAbandonedIfOpen()
   }
 }
 

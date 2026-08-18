@@ -19,11 +19,7 @@ export default defineEventHandler(async (event) => {
     account.subscription_status === 'active' &&
     Boolean(account.upstream_api_key)
   )
-  const availableMembers = availableAccounts.filter(account =>
-    typeof account.monthly_usage === 'number' &&
-    Number.isFinite(account.monthly_usage) &&
-    account.monthly_usage < 100
-  )
+  const availableMembers = availableAccounts
   const abnormalAccounts = accounts.filter(account =>
     account.status === 'error' || account.disabled_reason === 'risk_control'
   )
@@ -46,6 +42,7 @@ export default defineEventHandler(async (event) => {
     total: accounts.length,
     active: availableAccounts.length,
     error: abnormalAccounts.length,
+    riskControlled: accounts.filter(account => account.disabled_reason === 'risk_control').length,
     disabled: accounts.filter(account => account.status === 'disabled').length,
     pending: accounts.filter(account => account.status === 'pending').length,
     members: members.length,

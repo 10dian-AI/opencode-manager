@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import type { H3Event } from 'h3'
 import {
   AdaptiveProxyWorkerController,
@@ -9,6 +8,7 @@ import {
 } from './proxy-worker-pool'
 import { createProxyRequestLifecycle } from './proxy-request-lifecycle'
 import { createAccountFetch } from './account-fetch'
+import { selectAffinityAccountId } from './proxy-affinity'
 import { invalidateUpstreamApiKey } from './accounts'
 import { createCallLog } from './call-logs'
 
@@ -45,7 +45,11 @@ function jsonError(status: number, message: string, code: string) {
     .replace(/go service/gi, 'service')
 
   return new Response(JSON.stringify({
-    error: { message: officialMessage, type: 'server_error', code }
+    error: {
+      message: officialMessage,
+      type: status >= 500 ? 'server_error' : 'invalid_request_error',
+      code
+    }
   }), {
     status,
     headers: { 'content-type': 'application/json' }
@@ -69,18 +73,6 @@ function refreshAfterUpstreamError(accountId: number) {
 }
 
 /**
- * Pick a stable account index for an affinity key using consistent hashing.
- * @param affinityKey  session_id / prompt_cache_key extracted from the request body
- * @param accountCount total number of proxy candidates
- */
-function affinityIndex(affinityKey: string, accountCount: number): number {
-  const hash = createHash('sha256').update(affinityKey).digest()
-  // Read the first 4 bytes as a big-endian uint32 and modulo
-  const val = (hash[0]! << 24) | (hash[1]! << 16) | (hash[2]! << 8) | hash[3]!
-  return (val >>> 0) % accountCount
-}
-
-/**
  * Extract the affinity key from an OpenAI-compatible request body.
  * Checks `user` (session_id by convention) first, then custom extension fields.
  */
@@ -99,11 +91,11 @@ async function waitForAccountSlotAffinity(signal: AbortSignal, affinityKey: stri
   while (!signal.aborted) {
     const accounts = await getProxyCandidates()
     if (!accounts.length) return null
-    // 亲和索引基于稳定的 id 排序计算，避免候选列表按 subscription_ends_at
-    // 排序变化导致同一个 key 漂移到不同账号。
-    const ordered = [...accounts].sort((a, b) => a.id - b.id)
-    const affinityAccount = ordered[affinityIndex(affinityKey, ordered.length)]!
-    const start = accounts.findIndex(account => account.id === affinityAccount.id)
+    const affinityAccountId = selectAffinityAccountId(
+      affinityKey,
+      accounts.map(account => account.id)
+    )
+    const start = accounts.findIndex(account => account.id === affinityAccountId)
     // Try affinity account first, then fall back to the rest in order
     for (let attempt = 0; attempt < accounts.length; attempt++) {
       const account = accounts[(Math.max(0, start) + attempt) % accounts.length]!
@@ -133,11 +125,9 @@ async function waitForAccountSlot(signal: AbortSignal) {
   while (!signal.aborted) {
     const accounts = await getProxyCandidates()
     if (!accounts.length) return null
-    const first = await reserveProxyCandidate()
-    if (!first) return null
-    const start = accounts.findIndex(account => account.id === first.id)
-    for (let attempt = 0; attempt < accounts.length; attempt++) {
-      const account = accounts[(Math.max(0, start) + attempt) % accounts.length]!
+    // Candidates are ordered by subscription end time. Prefer the account
+    // expiring soonest and fall back only when its concurrency slots are busy.
+    for (const account of accounts) {
       const release = await tryAcquireAccountProxySlot(
         account.id,
         PROXY_ACCOUNT_CONCURRENCY,
@@ -305,72 +295,87 @@ export async function proxyChatCompletions(
           logData.errorMessage = `Upstream error (status ${response.status})`
           refreshAfterUpstreamError(account.id)
         }
+        if (!response.ok && !logData.errorMessage) {
+          logData.errorMessage = `Upstream error (status ${response.status})`
+        }
 
         // For streaming responses, wrap the body to track tokens
         if (logData.isStream && response.body && response.ok) {
           const reader = response.body.getReader()
           let released = false
+          let logged = false
           const decoder = new TextDecoder()
           let sseBuffer = ''
 
+          const logOnce = () => {
+            if (logged) return
+            logged = true
+            void logCallCompletion(apiKeyInfo, logData, callerIp, startTime)
+          }
+          const processSseLine = (line: string) => {
+            if (!line.startsWith('data: ') || line.includes('[DONE]')) return
+            if (!firstTokenRecorded) {
+              logData.firstTokenTime = Date.now() - firstTokenStartTime
+              firstTokenRecorded = true
+            }
+            try {
+              const data = JSON.parse(line.slice(6))
+              if (data.usage) {
+                logData.promptTokens = data.usage.prompt_tokens || null
+                logData.completionTokens = data.usage.completion_tokens || null
+                logData.cachedPromptTokens = data.usage.prompt_tokens_details?.cached_tokens || null
+                logData.createdPromptTokens = data.usage.prompt_tokens_details?.created_tokens || null
+              }
+            } catch {}
+          }
+          const consumeSseText = (text: string, flush = false) => {
+            sseBuffer += text
+            const lines = sseBuffer.split(/\r?\n/)
+            const tail = lines.pop() || ''
+            if (flush) {
+              if (tail) lines.push(tail)
+              sseBuffer = ''
+            } else {
+              sseBuffer = tail
+            }
+            for (const line of lines) processSseLine(line)
+          }
           const finish = () => {
             if (released) return
             released = true
-            upstreamSignal?.removeEventListener('abort', abort)
+            upstreamSignal.removeEventListener('abort', abort)
             void releaseAccountSlot()
           }
           const abort = () => {
             finish()
-            void reader.cancel(upstreamSignal?.reason).catch(() => {})
+            void reader.cancel(upstreamSignal.reason).catch(() => {})
           }
-          upstreamSignal?.addEventListener('abort', abort, { once: true })
-          if (upstreamSignal?.aborted) abort()
+          upstreamSignal.addEventListener('abort', abort, { once: true })
+          if (upstreamSignal.aborted) abort()
 
           const body = new ReadableStream<Uint8Array>({
             async pull(controller) {
               try {
                 const chunk = await reader.read()
                 if (chunk.done) {
+                  consumeSseText(decoder.decode(), true)
                   finish()
                   controller.close()
-                  // Log the streaming call
-                  void logCallCompletion(apiKeyInfo, logData, callerIp, startTime)
+                  logOnce()
                 } else {
-                  // SSE events may be split across network chunks. Keep the
-                  // incomplete line until the next chunk and only record the
-                  // first-token timestamp for an actual data event.
-                  sseBuffer += decoder.decode(chunk.value, { stream: true })
-                  const lines = sseBuffer.split(/\r?\n/)
-                  sseBuffer = lines.pop() || ''
-                  for (const line of lines) {
-                    if (!line.startsWith('data: ') || line.includes('[DONE]')) continue
-                    if (!firstTokenRecorded) {
-                      logData.firstTokenTime = Date.now() - firstTokenStartTime
-                      firstTokenRecorded = true
-                    }
-                    try {
-                      const data = JSON.parse(line.slice(6))
-                      if (data.usage) {
-                        logData.promptTokens = data.usage.prompt_tokens || null
-                        logData.completionTokens = data.usage.completion_tokens || null
-                        logData.cachedPromptTokens = data.usage.prompt_tokens_details?.cached_tokens || null
-                        logData.createdPromptTokens = data.usage.prompt_tokens_details?.created_tokens || null
-                      }
-                    } catch {}
-                  }
-
+                  consumeSseText(decoder.decode(chunk.value, { stream: true }))
                   controller.enqueue(chunk.value)
                 }
               } catch (error) {
                 finish()
                 controller.error(error)
-                void logCallCompletion(apiKeyInfo, logData, callerIp, startTime)
+                logOnce()
               }
             },
             async cancel(reason) {
               finish()
               await reader.cancel(reason).catch(() => {})
-              void logCallCompletion(apiKeyInfo, logData, callerIp, startTime)
+              logOnce()
             }
           })
 
@@ -459,8 +464,11 @@ async function logCallCompletion(
 ) {
   const endTime = Date.now()
   const responseTimeMs = endTime - startTime
-  const throughput = logData.completionTokens && logData.firstTokenTime
-    ? (logData.completionTokens / (responseTimeMs - logData.firstTokenTime)) * 1000
+  const generationTimeMs = logData.firstTokenTime === null
+    ? null
+    : responseTimeMs - logData.firstTokenTime
+  const throughput = logData.completionTokens && generationTimeMs && generationTimeMs > 0
+    ? (logData.completionTokens / generationTimeMs) * 1000
     : null
 
   try {

@@ -32,6 +32,24 @@ describe('account risk control', () => {
     expect((await inspectRiskControlResponse(response)).blocked).toBe(false)
   })
 
+  test('recognizes explicit provider blocks returned as 403 or with normalized auth types', async () => {
+    const forbidden = Response.json({
+      error: { type: 'Authentication_Error', message: 'Request was blocked by the upstream provider.' }
+    }, { status: 403 })
+
+    await expect(inspectRiskControlResponse(forbidden)).resolves.toMatchObject({
+      blocked: true,
+      errorType: 'Authentication_Error'
+    })
+  })
+
+  test('does not treat every 403 as risk control', async () => {
+    const forbidden = Response.json({
+      error: { type: 'AuthError', message: 'Permission denied' }
+    }, { status: 403 })
+
+    expect((await inspectRiskControlResponse(forbidden)).blocked).toBe(false)
+  })
   test('preserves manual and risk-control disabled states during account refresh', () => {
     expect(isProtectedAccountDisabledReason('manual')).toBe(true)
     expect(isProtectedAccountDisabledReason('risk_control')).toBe(true)

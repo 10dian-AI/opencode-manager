@@ -33,8 +33,20 @@ export default defineEventHandler(async (event) => {
   if (query.callerIp) searchParams.callerIp = String(query.callerIp).slice(0, 200)
   if (query.isStream !== undefined) searchParams.isStream = query.isStream === 'true'
   if (query.hasError !== undefined) searchParams.hasError = query.hasError === 'true'
-  if (query.startTime) searchParams.startTime = String(query.startTime)
-  if (query.endTime) searchParams.endTime = String(query.endTime)
+  if (query.startTime) {
+    const timestamp = Date.parse(String(query.startTime))
+    if (!Number.isFinite(timestamp)) {
+      throw createError({ statusCode: 400, statusMessage: 'Invalid start time' })
+    }
+    searchParams.startTime = new Date(timestamp).toISOString()
+  }
+  if (query.endTime) {
+    const timestamp = Date.parse(String(query.endTime))
+    if (!Number.isFinite(timestamp)) {
+      throw createError({ statusCode: 400, statusMessage: 'Invalid end time' })
+    }
+    searchParams.endTime = new Date(timestamp).toISOString()
+  }
 
   const result = await queryCallLogs(searchParams)
 

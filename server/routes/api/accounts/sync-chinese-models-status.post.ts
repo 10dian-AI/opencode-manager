@@ -1,34 +1,21 @@
 export default defineEventHandler(async (event) => {
   await requireAuth(event)
 
-  const accounts = await listAccounts()
-  const eligibleAccounts = accounts.filter(
-    account =>
-      account.auth_cookie &&
-      account.workspace_id &&
+  const eligibleIds = (await listAccounts())
+    .filter(account =>
+      Boolean(account.auth_cookie) &&
+      Boolean(account.workspace_id) &&
       account.disabled_reason !== 'manual'
-  )
+    )
+    .map(account => account.id)
 
-  let synchronized = 0
-  let failed = 0
-
-  for (const account of eligibleAccounts) {
-    try {
-      const refreshed = await refreshAccount(account.id)
-      if (refreshed.status === 'error' || refreshed.disabled_reason === 'auth_expired') {
-        failed++
-      } else {
-        synchronized++
-      }
-    } catch (error) {
-      failed++
-      console.error(`Failed to sync chinese models status for account ${account.id}:`, error)
-    }
-  }
-
+  const results = await syncAccountChineseModelsStatusesByIds(eligibleIds)
   return {
-    total: eligibleAccounts.length,
-    synchronized,
-    failed
+    total: results.length,
+    synchronized: results.filter(result => result.synchronized).length,
+    failed: results.filter(result => !result.synchronized).length,
+    failures: results
+      .filter(result => !result.synchronized)
+      .map(result => ({ account_id: result.account.id, message: result.message }))
   }
 })

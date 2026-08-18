@@ -213,7 +213,7 @@ export async function recordIpPoolCheck(
   const db = await getDb()
   const { rows } = await db.query<IpPoolEntry>(`
     UPDATE ip_pool
-    SET last_ip = $1, last_check_ok = $2, last_checked_at = $3,
+    SET last_ip = COALESCE($1, last_ip), last_check_ok = $2, last_checked_at = $3,
         last_error = $4, updated_at = now()
     WHERE id = $5
     RETURNING *

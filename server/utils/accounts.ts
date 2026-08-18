@@ -1,7 +1,7 @@
 import type { Account, AccountStatus } from './db'
-import { resolveRefreshedAccountEmail } from './account-identity'
+import { accountCredentialResetState, resolveRefreshedAccountEmail } from './account-identity'
 import { AccountOperationQueue } from './account-operation-queue'
-import { AccountPollSchedule, ERROR_REFRESH_INTERVAL_MS } from './account-polling'
+import { ERROR_REFRESH_INTERVAL_MS } from './account-refresh-policy'
 import { getAccountRefreshSettings } from './account-refresh-settings'
 import {
   beginAccountRefreshProgress,
@@ -35,15 +35,12 @@ import {
 const accountRefreshes = new Map<number, Promise<Account>>()
 const accountRetryTimers = new Map<number, ReturnType<typeof setTimeout>>()
 const accountOperations = new AccountOperationQueue()
-const accountPollSchedule = new AccountPollSchedule()
-let accountPollScheduleHydrated = false
 const REFRESH_CONCURRENCY = 4
 const RISK_CONTROL_CHECK_MODEL = process.env.RISK_CONTROL_CHECK_MODEL || 'glm-5.2'
 const AUTO_APPLY_REFERRAL_REWARDS = process.env.AUTO_APPLY_REFERRAL_REWARDS === 'true'
 const AUTO_CANCEL_SUBSCRIPTION_RENEWAL = process.env.AUTO_CANCEL_SUBSCRIPTION_RENEWAL !== 'false'
 const AUTO_ENABLE_CHINESE_MODELS = process.env.AUTO_ENABLE_CHINESE_MODELS !== 'false'
 
-let accountPollScheduleHydration: Promise<void> | null = null
 
 function cancelErrorAccountRetry(id: number) {
   const timer = accountRetryTimers.get(id)
@@ -67,7 +64,7 @@ function scheduleErrorAccountRetry(id: number) {
       account.disabled_reason === 'auth_expired' ||
       account.disabled_reason === 'manual'
     ) return
-    await refreshAccount(id).catch(() => {})
+    await refreshAccount(id, { triggerType: 'scheduled' }).catch(() => {})
   }, ERROR_REFRESH_INTERVAL_MS)
   timer.unref?.()
   accountRetryTimers.set(id, timer)
@@ -89,45 +86,22 @@ function runAccountOperation<T>(id: number, operation: () => Promise<T>) {
   })
 }
 
-function ensureAccountPollSchedule(now = Date.now()): Promise<void> {
-  if (accountPollScheduleHydrated) return Promise.resolve()
-  if (accountPollScheduleHydration) return accountPollScheduleHydration
-
-  const hydration = listAccounts()
-    .then(accounts => {
-      accountPollSchedule.hydrate(accounts, now)
-      accountPollScheduleHydrated = true
-      accountPollScheduleHydration = null
-    })
-    .catch(error => {
-      // Clear the memo so a transient database failure can be retried.
-      accountPollScheduleHydration = null
-      throw error
-    })
-  accountPollScheduleHydration = hydration
-  return hydration
-}
-
-export async function updateAccountPollSchedule(account: Account) {
-  await ensureAccountPollSchedule()
-  accountPollSchedule.schedule(account)
+export async function updateAccountPollSchedule(_account: Account) {
+  // Automatic refreshes are driven by persisted timestamps, scheduled tasks,
+  // and the short in-process error retry timer. Keep this compatibility hook
+  // so account operations do not need a second scheduling implementation.
 }
 
 export async function removeAccountPollSchedule(id: number) {
   cancelErrorAccountRetry(id)
-  await ensureAccountPollSchedule()
-  accountPollSchedule.remove(id)
   removeCachedReferralRewards(id)
   clearAccountRefreshProgress(id)
 }
 
 export async function rebuildAccountPollSchedule() {
   const accounts = await listAccounts()
-  accountPollSchedule.hydrate(accounts)
   retainCachedReferralRewardAccounts(accounts.map(account => account.id))
-  accountPollScheduleHydrated = true
 }
-
 export function deleteManagedAccount(id: number) {
   return runAccountOperation(id, async () => {
     const result = await deleteAccount(id)
@@ -182,26 +156,7 @@ export function updateAccountSettings(
     const updated = (await updateAccount(id, {
       ...(body.name !== undefined ? { name: body.name } : {}),
       ...(nextAuthCookie !== undefined ? { auth_cookie: nextAuthCookie } : {}),
-      ...(credentialChanged
-        ? {
-            email: null,
-            workspace_id: null,
-            workspace_name: null,
-            upstream_api_key: null,
-            referral_code: null,
-            risk_control_checked_at: null,
-            risk_control_detected_at: null,
-            ...(account.disabled_reason === RISK_CONTROL_DISABLED_REASON ||
-              account.disabled_reason === 'auth_expired'
-              ? {
-                  status: 'pending' as AccountStatus,
-                  disabled_reason: null,
-                  auto_enable_at: null,
-                  last_error: null
-                }
-              : {})
-          }
-        : {}),
+      ...(credentialChanged ? accountCredentialResetState(account) : {}),
       ...(body.status !== undefined
         ? body.status === 'disabled'
           ? { status: body.status, disabled_reason: 'manual', auto_enable_at: null }
@@ -329,20 +284,29 @@ export function toggleAccountChineseModels(id: number, enable: boolean): Promise
     if (!account) throw createError({ statusCode: 404, statusMessage: 'Account not found' })
 
     const now = new Date().toISOString()
+    const startedAt = Date.now()
+    const operation = enable ? 'enable_chinese_models' : 'disable_chinese_models'
     try {
       const workspaceId = account.workspace_id
       if (!workspaceId) throw new Error('无法获取账号的 workspace ID，请先刷新账号')
 
       const fetchImpl = await createAccountFetch(account)
       await toggleChineseModels(account.auth_cookie, workspaceId, enable, fetchImpl)
-      return (await updateAccount(id, {
+      const updated = (await updateAccount(id, {
         chinese_models_enabled_at: enable ? now : null,
         chinese_models_enable_error: null,
         chinese_models_checked_at: now,
-        // 以用户最近一次意图为准：手动开启清除手动关闭标记，手动关闭写入标记。
-        // 手动开启即使本次失败也清除标记，避免把自动开启逻辑永久锁死。
         chinese_models_manual_off_at: enable ? null : now
       }))!
+      void logOperation({
+        operation,
+        trigger_type: 'api',
+        account_id: id,
+        status: 'success',
+        detail: `账号 #${id} 中国模型已${enable ? '开启' : '关闭'}`,
+        duration_ms: Date.now() - startedAt
+      })
+      return updated
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       await updateAccount(id, {
@@ -350,62 +314,63 @@ export function toggleAccountChineseModels(id: number, enable: boolean): Promise
         chinese_models_checked_at: now,
         ...(enable ? { chinese_models_manual_off_at: null } : {})
       }).catch(() => {})
+      void logOperation({
+        operation,
+        trigger_type: 'api',
+        account_id: id,
+        status: 'error',
+        error_message: message,
+        duration_ms: Date.now() - startedAt
+      })
       throw createError({ statusCode: 502, statusMessage: message })
     }
   })
 }
 
-async function autoCancelSubscriptionRenewal(accounts: Account[]) {
-  await mapConcurrent(accounts, REFRESH_CONCURRENCY, async account => {
+export interface ChineseModelsStatusSyncResult {
+  account: Account
+  synchronized: boolean
+  message: string | null
+}
+
+export function syncAccountChineseModelsStatus(id: number): Promise<ChineseModelsStatusSyncResult> {
+  return runAccountOperation(id, async () => {
+    const account = await ensureAccountIpAssignment(id)
+    if (!account) throw createError({ statusCode: 404, statusMessage: 'Account not found' })
+    const checkedAt = new Date().toISOString()
     try {
-      if (
-        account.subscription_status !== 'active' ||
-        !account.workspace_id ||
-        account.subscription_cancelled_at
-      ) return
       const fetchImpl = await createAccountFetch(account)
       const info = await fetchOpenCodeAccount(account.auth_cookie, account.workspace_id, fetchImpl)
-      if (
-        !info.liteSubscriptionId ||
-        !info.billingPortalServerId ||
-        info.subscriptionStatus !== 'active'
-      ) return
-      const cancellation = await cancelOpenCodeSubscriptionRenewal(
-        account.auth_cookie,
-        account.workspace_id,
-        info.liteSubscriptionId,
-        info.billingPortalServerId,
-        fetchImpl
-      )
-      const checkedAt = new Date().toISOString()
-      await updateAccount(account.id, {
-        cancelled_subscription_id: info.liteSubscriptionId,
-        subscription_cancelled_at: cancellation.alreadyCancelled && account.subscription_cancelled_at
-          ? account.subscription_cancelled_at
-          : checkedAt,
-        subscription_cancel_checked_at: checkedAt,
-        subscription_ends_at: cancellation.currentPeriodEnd,
-        subscription_cancel_error: null
-      })
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      await updateAccount(account.id, { subscription_cancel_error: message }).catch(() => {})
+      if (info.chineseModelsEnabled === null) {
+        const message = '无法从 workspace 页面解析中国模型状态'
+        const updated = (await updateAccount(id, {
+          chinese_models_checked_at: checkedAt,
+          chinese_models_enable_error: message
+        }))!
+        return { account: updated, synchronized: false, message }
+      }
+      const updated = (await updateAccount(id, {
+        chinese_models_enabled_at: info.chineseModelsEnabled
+          ? account.chinese_models_enabled_at || checkedAt
+          : null,
+        chinese_models_checked_at: checkedAt,
+        chinese_models_enable_error: null
+      }))!
+      return { account: updated, synchronized: true, message: null }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      const updated = (await updateAccount(id, {
+        chinese_models_checked_at: checkedAt,
+        chinese_models_enable_error: message
+      }).catch(() => account)) || account
+      return { account: updated, synchronized: false, message }
     }
   })
 }
 
-async function autoEnableChineseModels(accounts: Account[]) {
-  if (!AUTO_ENABLE_CHINESE_MODELS) return
-  await mapConcurrent(accounts, REFRESH_CONCURRENCY, async account => {
-    try {
-      await enableAccountChineseModels(account.id)
-    } catch {
-      // Import and account refresh remain successful; the saved error is shown
-      // in the account list and the user can retry with the globe action.
-    }
-  })
+export function syncAccountChineseModelsStatusesByIds(ids: number[]) {
+  return mapConcurrent(ids, REFRESH_CONCURRENCY, syncAccountChineseModelsStatus)
 }
-
 function autoEnableChineseModelsForAccount(account: Account) {
   // 仅在满足全部守卫条件时自动开启：会员订阅、有 workspace、尚未开启、
   // 未被用户手动关闭过；并按 chinese_models_checked_at 节流（1 小时内不重复、
@@ -445,12 +410,6 @@ export async function expandAccountWorkspacesByIds(ids: number[]) {
     REFRESH_CONCURRENCY,
     async account => (await getAccount(account.id)) || account
   )
-  // Auto-enable Chinese models and auto-cancel subscription renewal both run
-  // in parallel and are fire-and-forget — import succeeds even if either fails.
-  await Promise.allSettled([
-    autoEnableChineseModels(accounts),
-    autoCancelSubscriptionRenewal(accounts)
-  ])
   return getAccountsByIds(accounts.map(account => account.id))
 }
 
@@ -473,6 +432,7 @@ interface RefreshAccountOptions {
   skipReferralRewards?: boolean
   throwOnError?: boolean
   progress?: AccountRefreshProgressReporter
+  triggerType?: 'manual' | 'api' | 'scheduled'
 }
 
 function cacheReferralRewards(accountId: number, info: OpenCodeAccountInfo) {
@@ -484,12 +444,18 @@ function cacheReferralRewards(accountId: number, info: OpenCodeAccountInfo) {
   })
 }
 
-export function refreshAccount(id: number): Promise<Account> {
+export function refreshAccount(
+  id: number,
+  options: Pick<RefreshAccountOptions, 'triggerType'> = {}
+): Promise<Account> {
   const pending = accountRefreshes.get(id)
   if (pending) return pending
 
   const progress = beginAccountRefreshProgress(id)
-  const refresh = runAccountOperation(id, () => refreshAccountOnce(id, { progress }))
+  const refresh = runAccountOperation(id, () => refreshAccountOnce(id, {
+    progress,
+    triggerType: options.triggerType || 'api'
+  }))
     .then(async account => {
       if (account.status === 'error') {
         progress.fail(account.last_error || '账号刷新失败')
@@ -601,6 +567,19 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
     const workspaceId = info.workspaceId || account.workspace_id
     options.progress?.update('subscription', '正在检查订阅与自动续费')
     const subscriptionUpdate: Partial<Account> = {}
+    if (
+      info.liteSubscriptionId &&
+      account.cancelled_subscription_id &&
+      account.cancelled_subscription_id !== info.liteSubscriptionId
+    ) {
+      Object.assign(subscriptionUpdate, {
+        cancelled_subscription_id: null,
+        subscription_cancelled_at: null,
+        subscription_cancel_checked_at: null,
+        subscription_ends_at: null,
+        subscription_cancel_error: null
+      })
+    }
     if (
       AUTO_CANCEL_SUBSCRIPTION_RENEWAL &&
       info.subscriptionStatus === 'active' &&
@@ -714,7 +693,13 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
       ...subscriptionUpdate,
       upstream_api_key: upstreamApiKey,
       ...(info.chineseModelsEnabled !== null && info.chineseModelsEnabled !== undefined
-        ? { chinese_models_enabled_at: info.chineseModelsEnabled ? (currentAccount.chinese_models_enabled_at || now.toISOString()) : null }
+        ? {
+            chinese_models_enabled_at: info.chineseModelsEnabled
+              ? currentAccount.chinese_models_enabled_at || now.toISOString()
+              : null,
+            chinese_models_checked_at: now.toISOString(),
+            chinese_models_enable_error: null
+          }
         : {}),
       status,
       disabled_reason: disabledReason,
@@ -730,7 +715,7 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
     }))!
     void logOperation({
       operation: 'refresh_account',
-      trigger_type: 'scheduled',
+      trigger_type: options.triggerType || 'api',
       account_id: id,
       status: 'success',
       detail: `账号 #${id} 刷新成功，状态：${status}`
@@ -767,7 +752,7 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
     }
     void logOperation({
       operation: 'refresh_account',
-      trigger_type: 'scheduled',
+      trigger_type: options.triggerType || 'api',
       account_id: id,
       status: 'error',
       error_message: message
@@ -831,7 +816,8 @@ export async function markAccountRiskControlled(
 
 async function invalidateUpstreamApiKeyOnce(
   id: number,
-  message: string | null
+  message: string | null,
+  riskControlCheckedAt?: string
 ): Promise<Account | undefined> {
   const account = await getAccount(id)
   if (!account) return undefined
@@ -839,7 +825,8 @@ async function invalidateUpstreamApiKeyOnce(
     upstream_api_key: null,
     status: account.disabled_reason === 'manual' ? 'disabled' : 'error',
     disabled_reason: account.disabled_reason === 'manual' ? 'manual' : null,
-    last_error: message || 'The cached upstream API key was rejected and has been cleared.'
+    last_error: message || 'The cached upstream API key was rejected and has been cleared.',
+    ...(riskControlCheckedAt ? { risk_control_checked_at: riskControlCheckedAt } : {})
   })
   if (updated) await updateAccountPollSchedule(updated)
   return updated
@@ -851,75 +838,113 @@ export function invalidateUpstreamApiKey(id: number, message: string | null) {
 
 export function checkAccountRiskControl(id: number): Promise<RiskControlCheckResult> {
   return runAccountOperation(id, async () => {
-    const account = await ensureAccountIpAssignment(id)
-    if (!account) {
-      throw createError({ statusCode: 404, statusMessage: 'Account not found' })
-    }
-    if (!account.upstream_api_key) {
-      throw createError({ statusCode: 409, statusMessage: 'Account does not have an upstream API key' })
-    }
+    const startedAt = Date.now()
+    try {
+      const account = await ensureAccountIpAssignment(id)
+      if (!account) {
+        throw createError({ statusCode: 404, statusMessage: 'Account not found' })
+      }
+      if (!account.upstream_api_key) {
+        throw createError({ statusCode: 409, statusMessage: 'Account does not have an upstream API key' })
+      }
 
-    const fetchImpl = await createAccountFetch(account)
-    const response = await fetchImpl('https://opencode.ai/zen/go/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        accept: 'application/json',
-        authorization: `Bearer ${account.upstream_api_key}`,
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: RISK_CONTROL_CHECK_MODEL,
-        messages: [{ role: 'user', content: 'Reply OK' }],
-        max_tokens: 1,
-        stream: false
-      }),
-      signal: AbortSignal.timeout(60_000)
-    })
-    const inspection = await inspectRiskControlResponse(response)
-    await response.body?.cancel().catch(() => {})
-    const checkedAt = new Date().toISOString()
+      const fetchImpl = await createAccountFetch(account)
+      const response = await fetchImpl('https://opencode.ai/zen/go/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          authorization: `Bearer ${account.upstream_api_key}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: RISK_CONTROL_CHECK_MODEL,
+          messages: [{ role: 'user', content: 'Reply OK' }],
+          max_tokens: 1,
+          stream: false
+        }),
+        signal: AbortSignal.timeout(60_000)
+      })
+      const inspection = await inspectRiskControlResponse(response)
+      await response.body?.cancel().catch(() => {})
+      const checkedAt = new Date().toISOString()
 
-    let updated: Account
-    if (inspection.blocked) {
-      updated = (await markAccountRiskControlled(id, inspection.message))!
-    } else if (response.status === 401 || response.status === 403) {
-      updated = (await invalidateUpstreamApiKeyOnce(
-        id,
-        `Upstream API key rejected (status ${response.status}); cached key cleared.`
-      ))!
-    } else if (response.ok && account.disabled_reason === RISK_CONTROL_DISABLED_REASON) {
-      // 风控解除后重新依据已缓存的会员和额度状态计算账号状态，
-      // 不要因为风控恢复就无条件把额度已耗尽的账号放回代理池。
-      const restored = resolveRiskControlRestoreState(account)
-      updated = (await updateAccount(id, {
-        status: restored.status,
-        disabled_reason: restored.disabledReason,
-        auto_enable_at: restored.autoEnableAt,
-        risk_control_checked_at: checkedAt,
-        last_error: null,
-        ...(account.abandoned_reason !== 'manual' ? {
-          is_abandoned: restored.monthlyExhausted,
-          abandoned_reason: restored.monthlyExhausted ? 'monthly_limit' : null
-        } : {})
-      }))!
-      await updateAccountPollSchedule(updated)
-    } else {
-      updated = (await updateAccount(id, { risk_control_checked_at: checkedAt }))!
-      await updateAccountPollSchedule(updated)
-    }
+      let updated: Account
+      if (inspection.blocked) {
+        updated = (await markAccountRiskControlled(id, inspection.message))!
+      } else if (response.status === 401 || response.status === 403) {
+        updated = (await invalidateUpstreamApiKeyOnce(
+          id,
+          `Upstream API key rejected (status ${response.status}); cached key cleared.`,
+          checkedAt
+        ))!
+      } else if (response.ok && account.disabled_reason === RISK_CONTROL_DISABLED_REASON) {
+        const restored = resolveRiskControlRestoreState(account)
+        updated = (await updateAccount(id, {
+          status: restored.status,
+          disabled_reason: restored.disabledReason,
+          auto_enable_at: restored.autoEnableAt,
+          risk_control_checked_at: checkedAt,
+          last_error: null,
+          ...(account.abandoned_reason !== 'manual' ? {
+            is_abandoned: restored.monthlyExhausted,
+            abandoned_reason: restored.monthlyExhausted ? 'monthly_limit' : null
+          } : {})
+        }))!
+        await updateAccountPollSchedule(updated)
+      } else {
+        updated = (await updateAccount(id, { risk_control_checked_at: checkedAt }))!
+        await updateAccountPollSchedule(updated)
+      }
 
-    return {
-      account: updated,
-      blocked: inspection.blocked,
-      upstreamStatus: response.status,
-      errorType: inspection.errorType,
-      message: inspection.message
+      const result = {
+        account: updated,
+        blocked: inspection.blocked,
+        upstreamStatus: response.status,
+        errorType: inspection.errorType,
+        message: inspection.message
+      }
+      void logOperation({
+        operation: 'risk_control_check',
+        trigger_type: 'api',
+        account_id: id,
+        status: 'success',
+        detail: inspection.blocked
+          ? `账号 #${id} 命中风控`
+          : `账号 #${id} 风控检测完成，上游状态 ${response.status}`,
+        duration_ms: Date.now() - startedAt
+      })
+      return result
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      void logOperation({
+        operation: 'risk_control_check',
+        trigger_type: 'api',
+        account_id: id,
+        status: 'error',
+        error_message: message,
+        duration_ms: Date.now() - startedAt
+      })
+      throw error
     }
   })
 }
 
 export function checkAccountRiskControlsByIds(ids: number[]) {
-  return mapConcurrent(ids, REFRESH_CONCURRENCY, checkAccountRiskControl)
+  return mapConcurrent(ids, REFRESH_CONCURRENCY, async id => {
+    try {
+      return await checkAccountRiskControl(id)
+    } catch (error) {
+      const account = await getAccount(id)
+      if (!account) throw error
+      return {
+        account,
+        blocked: false,
+        upstreamStatus: 0,
+        errorType: 'check_failed',
+        message: error instanceof Error ? error.message : String(error)
+      }
+    }
+  })
 }
 
 export async function checkAllAccountRiskControls() {
@@ -928,9 +953,8 @@ export async function checkAllAccountRiskControls() {
     account.disabled_reason !== 'manual' &&
     (account.status === 'active' || account.disabled_reason === RISK_CONTROL_DISABLED_REASON)
   )
-  return mapConcurrent(accounts, REFRESH_CONCURRENCY, account => checkAccountRiskControl(account.id))
+  return checkAccountRiskControlsByIds(accounts.map(account => account.id))
 }
-
 export async function refreshDueErrorAccounts(now = new Date()) {
   const settings = await getAccountRefreshSettings()
   if (!settings.auto_refresh_errors) return []
@@ -986,34 +1010,51 @@ async function refreshScheduledAccounts(
 ) {
   const checked = await mapConcurrent(ids, REFRESH_CONCURRENCY, async id => {
     const account = await getAccount(id)
-    if (!account) {
-      accountPollSchedule.remove(id)
-      return null
-    }
-    if (account.disabled_reason === 'manual') {
-      accountPollSchedule.schedule(account)
-      return null
-    }
-    if (account.disabled_reason === 'auth_expired') {
-      accountPollSchedule.schedule(account)
-      return null
-    }
+    if (!account) return null
+    if (account.disabled_reason === 'manual') return null
+    if (account.disabled_reason === 'auth_expired') return null
     if (
       options.skipErrors &&
       (account.status === 'error' || account.disabled_reason === 'auth_expired')
     ) {
       // Error retries are controlled exclusively by auto_refresh_errors.
-      accountPollSchedule.schedule(account)
       return null
     }
     return id
   })
   const existingIds = checked.filter((id): id is number => id !== null)
-  return mapConcurrent(existingIds, REFRESH_CONCURRENCY, id => refreshAccount(id))
+  return mapConcurrent(existingIds, REFRESH_CONCURRENCY, id =>
+    refreshAccount(id, { triggerType: 'scheduled' })
+  )
 }
 
 export function useAccountReferralReward(id: number, referralId: string) {
-  return runAccountOperation(id, () => useAccountReferralRewardOnce(id, referralId))
+  return runAccountOperation(id, async () => {
+    const startedAt = Date.now()
+    try {
+      const result = await useAccountReferralRewardOnce(id, referralId)
+      void logOperation({
+        operation: 'use_referral_reward',
+        trigger_type: 'api',
+        account_id: id,
+        status: 'success',
+        detail: `账号 #${id} 已使用推广奖励 ${result.rewardId}`,
+        duration_ms: Date.now() - startedAt
+      })
+      return result
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      void logOperation({
+        operation: 'use_referral_reward',
+        trigger_type: 'api',
+        account_id: id,
+        status: 'error',
+        error_message: message,
+        duration_ms: Date.now() - startedAt
+      })
+      throw error
+    }
+  })
 }
 
 async function useAccountReferralRewardOnce(id: number, referralId: string) {
@@ -1035,13 +1076,31 @@ async function useAccountReferralRewardOnce(id: number, referralId: string) {
     throw createError({ statusCode: 502, statusMessage: 'Referral reward action could not be resolved' })
   }
 
-  await applyOpenCodeReferralReward(
-    account.auth_cookie,
-    selected.workspaceId,
-    selected.rewardId,
-    selected.applyServerId,
-    fetchImpl
-  )
+  try {
+    await applyOpenCodeReferralReward(
+      account.auth_cookie,
+      selected.workspaceId,
+      selected.rewardId,
+      selected.applyServerId,
+      fetchImpl
+    )
+  } catch (error) {
+    const latest = await fetchOpenCodeAccount(
+      account.auth_cookie,
+      selected.workspaceId,
+      fetchImpl
+    ).catch(() => null)
+    if (latest) {
+      cacheReferralRewards(id, latest)
+      if (!latest.availableReferralRewardIds.includes(selected.rewardId)) {
+        throw createError({
+          statusCode: 409,
+          statusMessage: 'Selected referral reward is no longer available'
+        })
+      }
+    }
+    throw error
+  }
   consumeCachedReferralReward(id, selected.rewardId)
   await updateAccount(id, {
     last_referral_reward_id: selected.rewardId,
@@ -1075,22 +1134,21 @@ export function cancelAccountRenewal(id: number) {
 }
 
 async function cancelAccountRenewalOnce(id: number) {
-  const account = await ensureAccountIpAssignment(id)
-  if (!account) {
-    throw createError({ statusCode: 404, statusMessage: 'Account not found' })
-  }
-  const fetchImpl = await createAccountFetch(account)
   const start = Date.now()
-
-  const info = await fetchOpenCodeAccount(account.auth_cookie, account.workspace_id, fetchImpl)
-  if (info.subscriptionStatus !== 'active') {
-    throw createError({ statusCode: 409, statusMessage: 'Account does not have an active subscription' })
-  }
-  if (!info.workspaceId || !info.liteSubscriptionId || !info.billingPortalServerId) {
-    throw createError({ statusCode: 502, statusMessage: 'Subscription cancellation action could not be resolved' })
-  }
-
   try {
+    const account = await ensureAccountIpAssignment(id)
+    if (!account) {
+      throw createError({ statusCode: 404, statusMessage: 'Account not found' })
+    }
+    const fetchImpl = await createAccountFetch(account)
+    const info = await fetchOpenCodeAccount(account.auth_cookie, account.workspace_id, fetchImpl)
+    if (info.subscriptionStatus !== 'active') {
+      throw createError({ statusCode: 409, statusMessage: 'Account does not have an active subscription' })
+    }
+    if (!info.workspaceId || !info.liteSubscriptionId || !info.billingPortalServerId) {
+      throw createError({ statusCode: 502, statusMessage: 'Subscription cancellation action could not be resolved' })
+    }
+
     const cancellation = await cancelOpenCodeSubscriptionRenewal(
       account.auth_cookie,
       info.workspaceId,
@@ -1115,11 +1173,16 @@ async function cancelAccountRenewalOnce(id: number) {
       trigger_type: 'api',
       account_id: id,
       status: 'success',
-      detail: cancellation.alreadyCancelled ? `账号 #${id} 续费已取消（之前已取消）` : `账号 #${id} 续费取消成功`,
+      detail: cancellation.alreadyCancelled
+        ? `账号 #${id} 续费已取消（之前已取消）`
+        : `账号 #${id} 续费取消成功`,
       duration_ms: Date.now() - start
     })
 
-    const refreshedAccount = await refreshAccountOnce(id, { skipReferralRewards: true })
+    const refreshedAccount = await refreshAccountOnce(id, {
+      skipReferralRewards: true,
+      triggerType: 'api'
+    })
     await updateAccountPollSchedule(refreshedAccount)
     return {
       account: refreshedAccount,
@@ -1128,6 +1191,10 @@ async function cancelAccountRenewalOnce(id: number) {
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
+    await updateAccount(id, {
+      subscription_cancel_checked_at: new Date().toISOString(),
+      subscription_cancel_error: message
+    }).catch(() => {})
     void logOperation({
       operation: 'cancel_renewal',
       trigger_type: 'api',

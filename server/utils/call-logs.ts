@@ -112,9 +112,9 @@ export async function queryCallLogs(query: CallLogQuery): Promise<{ logs: CallLo
 
   if (query.hasError !== undefined) {
     if (query.hasError) {
-      conditions.push(`error_message IS NOT NULL`)
+      conditions.push(`(error_message IS NOT NULL OR status_code >= 400)`)
     } else {
-      conditions.push(`error_message IS NULL`)
+      conditions.push(`(error_message IS NULL AND (status_code IS NULL OR status_code < 400))`)
     }
   }
 

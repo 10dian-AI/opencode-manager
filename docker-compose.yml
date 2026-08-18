@@ -47,20 +47,13 @@ services:
       AUTO_APPLY_REFERRAL_REWARDS: ${AUTO_APPLY_REFERRAL_REWARDS:-false}
       AUTO_CANCEL_SUBSCRIPTION_RENEWAL: ${AUTO_CANCEL_SUBSCRIPTION_RENEWAL:-false}
       AUTO_ENABLE_CHINESE_MODELS: ${AUTO_ENABLE_CHINESE_MODELS:-true}
+      CALL_LOG_RETENTION_DAYS: ${CALL_LOG_RETENTION_DAYS:-30}
+      OPERATION_LOG_RETENTION_DAYS: ${OPERATION_LOG_RETENTION_DAYS:-90}
+      MONITOR_PORT: 3031
     ports:
       # Host port 3030 -> container port 3000.
       - "${APP_PORT:-3030}:3000"
-
-  monitor:
-    image: ghcr.io/10dian-ai/opencode-manager:latest
-    restart: unless-stopped
-    depends_on:
-      - app
-    command: ["bun", "monitor-server.mjs"]
-    environment:
-      MONITOR_PORT: 3031
-      MONITOR_API_BASE: http://app:3000
-    ports:
+      # Host monitor port -> embedded monitor server.
       - "${MONITOR_PORT:-3031}:3031"
 
 volumes:

@@ -47,6 +47,7 @@ export interface Stats {
   total: number
   active: number
   error: number
+  riskControlled: number
   disabled: number
   pending: number
   members: number
@@ -420,10 +421,13 @@ export function useAccounts() {
   async function runAccountBatch(
     ids: number[],
     action: AccountBatchAction,
-    onProgress?: (progress: AccountBatchProgress) => void
+    onProgress?: (progress: AccountBatchProgress) => void,
+    additionalAccounts: Account[] = []
   ): Promise<AccountBatchResult> {
     const uniqueIds = [...new Set(ids)]
-    const accountById = new Map(accounts.value.map(account => [account.id, account]))
+    const accountById = new Map(
+      [...accounts.value, ...additionalAccounts].map(account => [account.id, account])
+    )
     const requestedAccounts = uniqueIds
       .map(id => accountById.get(id))
       .filter((account): account is Account => Boolean(account))

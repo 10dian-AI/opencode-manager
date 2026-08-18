@@ -156,6 +156,28 @@ test('resolves a workspace through auth when no cache exists', async () => {
   ])
 })
 
+test('rediscovers the workspace when a cached workspace is gone', async () => {
+  const calls = installFetch([
+    response('https://opencode.ai/workspace/wrk_STALE123/go', 'gone', { status: 404 }),
+    response('https://opencode.ai/auth', '', {
+      status: 302,
+      headers: { location: '/workspace/wrk_NEW123' }
+    }),
+    response(
+      'https://opencode.ai/workspace/wrk_NEW123/go',
+      hydration('wrk_NEW123', 'New')
+    )
+  ])
+
+  const info = await fetchOpenCodeAccount('token', 'wrk_STALE123')
+
+  expect(info.workspaceId).toBe('wrk_NEW123')
+  expect(calls).toEqual([
+    'https://opencode.ai/workspace/wrk_STALE123/go',
+    'https://opencode.ai/auth',
+    'https://opencode.ai/workspace/wrk_NEW123/go'
+  ])
+})
 test('does not restart the auth redirect flow when a cached workspace fails', async () => {
   const calls = installFetch([
     response('https://opencode.ai/auth/authorize', '<html>login</html>')

@@ -109,6 +109,11 @@ function isRetryableWorkspaceStatus(status: number) {
   return status === 408 || status === 429 || status >= 500
 }
 
+function shouldRediscoverCachedWorkspace(error: unknown) {
+  return error instanceof WorkspaceResponseError &&
+    (error.status === 404 || error.status === 410 || isRetryableWorkspaceStatus(error.status))
+}
+
 class WorkspaceResponseError extends Error {
   constructor(message: string, readonly status: number) {
     super(message)
@@ -764,8 +769,7 @@ export async function fetchOpenCodeAccount(
     try {
       return await loadWorkspace(cookie, cachedId, fetchImpl, onStage)
     } catch (error) {
-      if (!(error instanceof WorkspaceResponseError) ||
-        !isRetryableWorkspaceStatus(error.status)) throw error
+      if (!shouldRediscoverCachedWorkspace(error)) throw error
 
       const resolvedId = await resolveWorkspaceId(cookie, fetchImpl)
       if (resolvedId === cachedId) throw error
@@ -783,8 +787,18 @@ export async function fetchOpenCodeAccounts(
   fetchImpl: typeof fetch = fetch
 ): Promise<OpenCodeAccountInfo[]> {
   const cookie = buildAuthCookie(authCookie)
-  const workspaceId = cachedWorkspaceId?.trim() || await resolveWorkspaceId(cookie, fetchImpl)
-  const primary = await loadWorkspace(cookie, workspaceId, fetchImpl)
+  const cachedId = cachedWorkspaceId?.trim()
+  let workspaceId = cachedId || await resolveWorkspaceId(cookie, fetchImpl)
+  let primary: OpenCodeAccountInfo
+  try {
+    primary = await loadWorkspace(cookie, workspaceId, fetchImpl)
+  } catch (error) {
+    if (!cachedId || !shouldRediscoverCachedWorkspace(error)) throw error
+    const resolvedId = await resolveWorkspaceId(cookie, fetchImpl)
+    if (resolvedId === cachedId) throw error
+    workspaceId = resolvedId
+    primary = await loadWorkspace(cookie, workspaceId, fetchImpl)
+  }
   const workspaceIds = [
     ...new Set([
       primary.workspaceId,

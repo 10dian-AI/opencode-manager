@@ -53,7 +53,7 @@ export function resolveRiskControlRestoreState(account: RiskControlRestoreSnapsh
 export async function inspectRiskControlResponse(
   response: Response
 ): Promise<RiskControlInspection> {
-  if (response.status !== 401) {
+  if (response.status !== 401 && response.status !== 403) {
     return { blocked: false, errorType: null, message: null }
   }
 
@@ -62,8 +62,10 @@ export async function inspectRiskControlResponse(
   } | null
   const errorType = typeof body?.error?.type === 'string' ? body.error.type : null
   const message = typeof body?.error?.message === 'string' ? body.error.message : null
-  const blocked = errorType?.toLowerCase() === 'autherror' &&
-    message?.toLowerCase().includes('request blocked by upstream provider') === true
+  const normalizedType = errorType?.toLowerCase().replace(/[^a-z0-9]/g, '') || ''
+  const blocked =
+    (normalizedType === 'autherror' || normalizedType === 'authenticationerror') &&
+    /request\s+(?:was\s+)?blocked\s+by\s+(?:the\s+)?upstream\s+provider/i.test(message || '')
 
   return { blocked, errorType, message }
 }

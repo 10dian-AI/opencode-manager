@@ -70,7 +70,13 @@ async function fetchLogs() {
       offset: (page.value - 1) * pageSize
     }
     for (const [key, value] of Object.entries(filters.value)) {
-      if (value) query[key] = value
+      if (!value) continue
+      if (key === 'startTime' || key === 'endTime') {
+        const timestamp = new Date(value).getTime()
+        if (Number.isFinite(timestamp)) query[key] = new Date(timestamp).toISOString()
+      } else {
+        query[key] = value
+      }
     }
     const response = await $fetch<{ logs: CallLog[]; total: number }>('/api/call-logs', {
       query,

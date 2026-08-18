@@ -120,3 +120,11 @@ export async function countOperationLogs(opts: { operation?: string; status?: st
   const { rows } = await db.query<{ count: string }>(`SELECT COUNT(*) as count FROM operation_logs ${where}`, values)
   return Number(rows[0]?.count ?? 0)
 }
+export async function deleteOldOperationLogs(daysToKeep = 30): Promise<number> {
+  const db = await getDb()
+  const result = await db.query(
+    `DELETE FROM operation_logs WHERE created_at < now() - ($1 || ' days')::interval`,
+    [String(daysToKeep)]
+  )
+  return result.rowCount
+}

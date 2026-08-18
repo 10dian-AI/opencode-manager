@@ -1,7 +1,7 @@
 export default defineTask({
   meta: {
     name: 'refresh-error-accounts',
-    description: 'Aggressively retry accounts in error state every minute tick (effective ~5 s via polling schedule)'
+    description: 'Fallback retry for error accounts on each minute tick; in-process retries run after about 5 seconds'
   },
   async run() {
     const results = await withAdvisoryLock(

@@ -17,6 +17,9 @@
     "preview": "nuxt preview",
     "start": "node .output/server/index.mjs",
     "monitor": "node monitor-server.mjs",
+    "test": "bun test",
+    "typecheck": "nuxt typecheck",
+    "check": "bun run typecheck && bun test && bun run build",
     "test:auth": "bun run build && bun test tests/auth-ssr.test.ts",
     "postinstall": "nuxt prepare"
   },

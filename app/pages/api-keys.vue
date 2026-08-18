@@ -29,7 +29,11 @@ async function load() {
 function openModal() { open.value = true }
 function closeModal() { open.value = false }
 
-onMounted(load)
+onMounted(() => {
+  void load().catch((error: any) => {
+    toast.add({ title: error?.data?.statusMessage || error?.message || 'API 密钥加载失败', color: 'error' })
+  })
+})
 
 async function createKey() {
   submitting.value = true

@@ -188,6 +188,8 @@ curl -H "Authorization: Bearer sk-ocm-your-key" \
 | `PROXY_QUEUE_LIMIT` | 等待队列上限 | `8192` |
 | `PROXY_ACCOUNT_CONCURRENCY` | 单账号最大并发请求数 | `2` |
 | `TRUST_PROXY` | 信任反向代理的 X-Forwarded-For | `false` |
+| `CALL_LOG_RETENTION_DAYS` | 调用日志保留天数 | `30` |
+| `OPERATION_LOG_RETENTION_DAYS` | 操作日志保留天数 | `90` |
 
 ## 贡献
 
@@ -201,8 +203,8 @@ curl -H "Authorization: Bearer sk-ocm-your-key" \
 - 解析 workspace、邮箱、滚动/周/月用量、推荐码
 - 单号刷新 / 全部刷新
 - OpenAI 兼容的 `/v1/models`、`/v1/chat/completions`（支持流式透传）
-- 使用内存轮询号池，单次请求只访问一个上游账户；workspace 页面遇到 408、429、5xx 或网络超时会有限重试
-- 支持单号或全量风控检测；普通代理请求的 401/403 只会清理失效 Key，不再自动判定封禁
+- 使用数据库时间节点、定时任务和短延迟 error 重试维护号池；单次请求只访问一个上游账户，workspace 页面遇到 408、429、5xx 或网络超时会有限重试
+- 支持单号或全量风控检测；仅明确的 AuthError + 上游封禁文案会判定风控，普通代理请求的 401/403 只会清理失效 Key
 - 支持手动使用推广收益；自动使用默认关闭，可通过环境变量显式开启
 - 支持手动关闭续费；直接运行时自动关闭续费默认开启，Docker Compose 默认关闭，可通过环境变量覆盖
 - 额度耗尽自动禁用并在窗口释放后恢复，会员过期自动禁用
@@ -266,7 +268,7 @@ PROXY_MIN_WORKERS=4
 PROXY_MAX_WORKERS=32
 PROXY_QUEUE_LIMIT=8192
 PROXY_ACCOUNT_CONCURRENCY=2
-# 以下操作会修改官方账号状态，默认关闭
+# 推广奖励和自动取消续费在 Compose 中默认关闭
 AUTO_APPLY_REFERRAL_REWARDS=false
 AUTO_CANCEL_SUBSCRIPTION_RENEWAL=false
 # 输入 Cookie 时自动开启中国模型（默认开启）
@@ -381,7 +383,7 @@ docker compose down -v         # 停止并删除数据卷，会清空数据库
 `docker-compose.yml` 说明：
 
 - 宿主端口默认 `3030`，容器内部固定 `3000`。改端口只需在 `.env` 里设 `APP_PORT`，不用动 compose 文件
-- `monitor` 服务将外部只读监控面板映射到宿主 `3031`；可通过 `MONITOR_PORT` 修改，它通过容器内网访问主应用，不需要浏览器跨域
+- 主应用内置只读监控服务，并将容器端口 `3031` 映射到宿主；可通过 `MONITOR_PORT` 修改宿主端口，不需要额外监控容器
 - `postgres` 使用 `pg_isready` 健康检查，`app` 通过 `depends_on: service_healthy` 等数据库就绪后再启动，避免首次启动建表失败
 - 数据库不对外映射端口，只在内部网络暴露；本地开发想直连可自行加 `ports`
 - 数据存放在 `postgres-data` 命名卷

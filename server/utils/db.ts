@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
 import { createError } from 'h3'
 import { normalizeStoredAuthCookieValue, validateAuthCookieValue } from './auth-cookie'
@@ -153,7 +153,6 @@ const runtimeRequire = createRequire(
 let pool: PoolLike | null = null
 let lockPool: PoolLike | null = null
 let readyPromise: Promise<PoolLike> | null = null
-let proxyPoolCursor = 0
 
 /** Lets other modules that write to accounts directly drop the proxy pool cache. */
 export function invalidateAccountCaches() {
@@ -484,32 +483,32 @@ export function getDb(): Promise<SqlClient> {
   if (pool) return Promise.resolve(pool)
   if (readyPromise) return readyPromise
 
-  readyPromise = (async () => {
+  const initialization = (async () => {
     const created = buildPool()
-    const client = await created.connect()
     try {
-      await initializeSchema(client)
-    } finally {
-      client.release()
+      const client = await created.connect()
+      try {
+        await initializeSchema(client)
+      } finally {
+        client.release()
+      }
+      pool = created
+      return created
+    } catch (error) {
+      await created.end().catch(() => {})
+      throw error
     }
-    pool = created
-    return created
   })()
 
-  readyPromise = readyPromise.catch(error => {
-    const currentPromise = readyPromise
-    readyPromise = null
+  let guarded!: Promise<PoolLike>
+  guarded = initialization.catch(error => {
+    if (readyPromise === guarded) readyPromise = null
     pool = null
-    // Only reset if this is still the current promise to avoid race conditions
-    if (readyPromise === currentPromise) {
-      readyPromise = null
-    }
     throw error
   })
-
-  return readyPromise
+  readyPromise = guarded
+  return guarded
 }
-
 export async function closeDb() {
   const current = pool
   const currentLocks = lockPool
@@ -685,14 +684,6 @@ export async function getProxyCandidates(): Promise<Account[]> {
   `)
 }
 
-export async function reserveProxyCandidate(): Promise<Account | undefined> {
-  const accounts = await getProxyCandidates()
-  if (!accounts.length) return undefined
-  const cursor = proxyPoolCursor % accounts.length
-  proxyPoolCursor = (cursor + 1) % accounts.length
-  return accounts[cursor]
-}
-
 export function listManagedApiKeys(): Promise<ManagedApiKey[]> {
   return queryRows<ManagedApiKey>('SELECT * FROM api_keys ORDER BY id DESC')
 }
@@ -789,8 +780,11 @@ async function withAdvisoryLocks<T>(
 }
 
 export function withAuthCookieLocks<T>(cookies: string[], operation: () => Promise<T>) {
-  void cookies
-  return withAdvisoryLock('account-import', operation) as Promise<T>
+  const keys = [...new Set(cookies)]
+    .map(cookie => createHash('sha256').update(cookie).digest('hex'))
+    .sort()
+    .map(hash => `account-import:${hash}`)
+  return withAdvisoryLocks(keys.length ? keys : ['account-import'], operation) as Promise<T>
 }
 
 export function withAccountLocks<T>(ids: number[], operation: () => Promise<T>) {

@@ -61,8 +61,10 @@ const columns: TableColumn<OperationLog>[] = [
 ]
 
 let requestController: AbortController | null = null
+let requestGeneration = 0
 
 async function fetchLogs() {
+  const generation = ++requestGeneration
   requestController?.abort()
   requestController = new AbortController()
   loading.value = true
@@ -87,7 +89,7 @@ async function fetchLogs() {
       })
     }
   } finally {
-    loading.value = false
+    if (generation === requestGeneration) loading.value = false
   }
 }
 
