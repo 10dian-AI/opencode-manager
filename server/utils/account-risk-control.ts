@@ -63,9 +63,12 @@ export async function inspectRiskControlResponse(
   const errorType = typeof body?.error?.type === 'string' ? body.error.type : null
   const message = typeof body?.error?.message === 'string' ? body.error.message : null
   const normalizedType = errorType?.toLowerCase().replace(/[^a-z0-9]/g, '') || ''
-  const blocked =
+  const explicitProviderBlock =
     (normalizedType === 'autherror' || normalizedType === 'authenticationerror') &&
     /request\s+(?:was\s+)?blocked\s+by\s+(?:the\s+)?upstream\s+provider/i.test(message || '')
+  // Official account API 401 is terminal for this pool. This deliberately
+  // does not apply to panel login, client API-key auth, or Cookie page loads.
+  const blocked = response.status === 401 || explicitProviderBlock
 
   return { blocked, errorType, message }
 }

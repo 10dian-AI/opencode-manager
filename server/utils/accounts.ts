@@ -148,6 +148,12 @@ export function updateAccountSettings(
     if (!account) {
       throw createError({ statusCode: 404, statusMessage: 'Account not found' })
     }
+    if (body.is_abandoned === false && account.disabled_reason === RISK_CONTROL_DISABLED_REASON) {
+      throw createError({
+        statusCode: 409,
+        statusMessage: 'Accounts abandoned after an upstream 401 cannot be restored'
+      })
+    }
     const nextAuthCookie = body.auth_cookie === undefined
       ? undefined
       : validateAuthCookieValue(body.auth_cookie)
@@ -797,6 +803,7 @@ export async function markAccountRiskControlled(
 
   const now = new Date().toISOString()
   const updated = (await updateAccount(id, {
+    upstream_api_key: null,
     status: 'disabled',
     disabled_reason: RISK_CONTROL_DISABLED_REASON,
     auto_enable_at: null,
@@ -804,11 +811,9 @@ export async function markAccountRiskControlled(
     risk_control_detected_at: account.disabled_reason === RISK_CONTROL_DISABLED_REASON
       ? account.risk_control_detected_at || now
       : now,
-    last_error: message || 'Request blocked by upstream provider.',
-    ...(account.abandoned_reason !== 'manual' ? {
-      is_abandoned: true,
-      abandoned_reason: 'risk_control'
-    } : {})
+    last_error: message || 'Upstream account returned 401 and was abandoned.',
+    is_abandoned: true,
+    abandoned_reason: 'risk_control'
   }))!
   await updateAccountPollSchedule(updated)
   return updated
@@ -870,8 +875,11 @@ export function checkAccountRiskControl(id: number): Promise<RiskControlCheckRes
 
       let updated: Account
       if (inspection.blocked) {
-        updated = (await markAccountRiskControlled(id, inspection.message))!
-      } else if (response.status === 401 || response.status === 403) {
+        const blockMessage = response.status === 401
+          ? `Upstream account returned 401 and was abandoned.${inspection.message ? ` Provider message: ${inspection.message}` : ''}`
+          : inspection.message
+        updated = (await markAccountRiskControlled(id, blockMessage))!
+      } else if (response.status === 403) {
         updated = (await invalidateUpstreamApiKeyOnce(
           id,
           `Upstream API key rejected (status ${response.status}); cached key cleared.`,

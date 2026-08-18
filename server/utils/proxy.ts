@@ -9,7 +9,7 @@ import {
 import { createProxyRequestLifecycle } from './proxy-request-lifecycle'
 import { createAccountFetch } from './account-fetch'
 import { selectAffinityAccountId } from './proxy-affinity'
-import { invalidateUpstreamApiKey } from './accounts'
+import { invalidateUpstreamApiKey, markAccountRiskControlled } from './accounts'
 import { createCallLog } from './call-logs'
 
 const GO_BASE = 'https://opencode.ai/zen/go/v1'
@@ -285,11 +285,17 @@ export async function proxyChatCompletions(
 
         logData.statusCode = response.status
 
-        if (response.status === 401 || response.status === 403) {
-          logData.errorMessage = `Upstream API key rejected (status ${response.status})`
+        if (response.status === 401) {
+          logData.errorMessage = 'Upstream account returned 401 and was abandoned'
+          await markAccountRiskControlled(
+            account.id,
+            'Upstream account returned 401 and was abandoned.'
+          ).catch(() => {})
+        } else if (response.status === 403) {
+          logData.errorMessage = 'Upstream API key rejected (status 403)'
           await invalidateUpstreamApiKey(
             account.id,
-            `Upstream API key rejected (status ${response.status}); cached key cleared.`
+            'Upstream API key rejected (status 403); cached key cleared.'
           ).catch(() => {})
         } else if (ACCOUNT_ERROR_STATUSES.has(response.status) || response.status >= 500) {
           logData.errorMessage = `Upstream error (status ${response.status})`
@@ -515,10 +521,15 @@ export async function proxyModels(event: H3Event): Promise<Response> {
       headers: upstreamHeaders(event, account.upstream_api_key || undefined),
       signal
     })
-    if (response.status === 401 || response.status === 403) {
+    if (response.status === 401) {
+      await markAccountRiskControlled(
+        account.id,
+        'Upstream account returned 401 and was abandoned.'
+      ).catch(() => {})
+    } else if (response.status === 403) {
       await invalidateUpstreamApiKey(
         account.id,
-        `Upstream API key rejected (status ${response.status}); cached key cleared.`
+        'Upstream API key rejected (status 403); cached key cleared.'
       ).catch(() => {})
     } else if (!response.ok) {
       refreshAfterUpstreamError(account.id)

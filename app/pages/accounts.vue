@@ -859,6 +859,7 @@ async function confirmDelete() {
       const succeeded = await executeBulkAction('delete', intent.ids)
       if (!succeeded) return
     }
+    refreshAbandonedIfOpen()
     deleteDialogOpen.value = false
     deleteIntent.value = null
   } catch (e: any) {
@@ -1543,6 +1544,7 @@ async function exportKeys() {
                 <td class="px-4 py-3">
                   <div class="flex justify-end gap-1">
                     <UButton
+                      v-if="account.abandoned_reason !== 'risk_control'"
                       icon="i-lucide-refresh-cw"
                       size="xs"
                       color="neutral"
@@ -1552,6 +1554,7 @@ async function exportKeys() {
                       @click="onAbandonedRefresh(account)"
                     />
                     <UButton
+                      v-if="account.abandoned_reason !== 'risk_control' && account.has_upstream_api_key"
                       icon="i-lucide-shield-check"
                       size="xs"
                       color="neutral"
@@ -1561,6 +1564,7 @@ async function exportKeys() {
                       @click="onAbandonedCheckRiskControl(account)"
                     />
                     <UButton
+                      v-if="account.abandoned_reason !== 'risk_control'"
                       icon="i-lucide-rotate-ccw"
                       size="xs"
                       color="primary"
@@ -1570,6 +1574,14 @@ async function exportKeys() {
                     >
                       恢复
                     </UButton>
+                    <UButton
+                      icon="i-lucide-trash-2"
+                      size="xs"
+                      color="error"
+                      variant="ghost"
+                      title="删除账号"
+                      @click="onDelete(account)"
+                    />
                   </div>
                 </td>
               </tr>

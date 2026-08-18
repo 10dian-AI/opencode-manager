@@ -24,12 +24,12 @@ describe('account risk control', () => {
     await expect(response.json()).resolves.toEqual(body)
   })
 
-  test('does not classify unrelated 401 responses as risk control', async () => {
+  test('treats every official account API 401 as terminal', async () => {
     const response = Response.json({
       error: { type: 'AuthError', message: 'Invalid API key' }
     }, { status: 401 })
 
-    expect((await inspectRiskControlResponse(response)).blocked).toBe(false)
+    expect((await inspectRiskControlResponse(response)).blocked).toBe(true)
   })
 
   test('recognizes explicit provider blocks returned as 403 or with normalized auth types', async () => {
