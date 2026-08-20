@@ -14,6 +14,7 @@ import { createCallLog } from './call-logs'
 
 const GO_BASE = 'https://opencode.ai/zen/go/v1'
 const ACCOUNT_ERROR_STATUSES = new Set([401, 403, 408, 409, 429])
+const UPSTREAM_ERROR_DETAIL_MAX_LENGTH = 1500
 const PROXY_MIN_WORKERS = positiveInteger(
   process.env.PROXY_MIN_WORKERS || process.env.PROXY_WORKERS,
   4
@@ -64,6 +65,59 @@ function upstreamHeaders(event: H3Event, apiKey?: string) {
   if (accept) headers.set('accept', accept)
   if (apiKey) headers.set('authorization', `Bearer ${apiKey}`)
   return headers
+}
+
+function truncateErrorDetail(value: string) {
+  if (value.length <= UPSTREAM_ERROR_DETAIL_MAX_LENGTH) return value
+  return `${value.slice(0, UPSTREAM_ERROR_DETAIL_MAX_LENGTH)}...`
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : null
+}
+
+function stringValue(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+/** Read useful upstream diagnostics without consuming the response returned to the caller. */
+async function describeUpstreamError(response: Response): Promise<string> {
+  const requestId = response.headers.get('x-request-id') || response.headers.get('request-id')
+  let raw = ''
+  try {
+    raw = await response.clone().text()
+  } catch {}
+
+  const compact = raw.replace(/\s+/g, ' ').trim()
+  let detail = ''
+  if (compact) {
+    try {
+      const payload = recordValue(JSON.parse(raw))
+      const parsedError = payload?.error
+      const error = recordValue(parsedError)
+      const message = stringValue(error?.message)
+        || stringValue(parsedError)
+        || stringValue(payload?.message)
+      const type = stringValue(error?.type)
+      const code = stringValue(error?.code)
+      detail = [message, type && `type=${type}`, code && `code=${code}`]
+        .filter(Boolean)
+        .join(' | ')
+    } catch {}
+    if (!detail) detail = compact
+  }
+
+  const parts = [detail && truncateErrorDetail(detail), requestId && `request_id=${requestId.trim()}`]
+    .filter(Boolean)
+  return parts.join(' | ')
+}
+
+function formatUpstreamError(status: number, detail: string) {
+  return `Upstream error (status ${status})${detail ? `: ${detail}` : ''}`
+}
+
+function appendUpstreamErrorDetail(message: string, detail: string) {
+  return detail ? `${message}: ${detail}` : message
 }
 
 function refreshAfterUpstreamError(accountId: number) {
@@ -284,25 +338,34 @@ export async function proxyChatCompletions(
         })
 
         logData.statusCode = response.status
+        const upstreamErrorDetail = !response.ok
+          ? await describeUpstreamError(response)
+          : ''
 
         if (response.status === 401) {
-          logData.errorMessage = 'Upstream account returned 401 and was abandoned'
+          logData.errorMessage = appendUpstreamErrorDetail(
+            'Upstream account returned 401 and was abandoned',
+            upstreamErrorDetail
+          )
           await markAccountRiskControlled(
             account.id,
             'Upstream account returned 401 and was abandoned.'
           ).catch(() => {})
         } else if (response.status === 403) {
-          logData.errorMessage = 'Upstream API key rejected (status 403)'
+          logData.errorMessage = appendUpstreamErrorDetail(
+            'Upstream API key rejected (status 403)',
+            upstreamErrorDetail
+          )
           await invalidateUpstreamApiKey(
             account.id,
             'Upstream API key rejected (status 403); cached key cleared.'
           ).catch(() => {})
         } else if (ACCOUNT_ERROR_STATUSES.has(response.status) || response.status >= 500) {
-          logData.errorMessage = `Upstream error (status ${response.status})`
+          logData.errorMessage = formatUpstreamError(response.status, upstreamErrorDetail)
           refreshAfterUpstreamError(account.id)
         }
         if (!response.ok && !logData.errorMessage) {
-          logData.errorMessage = `Upstream error (status ${response.status})`
+          logData.errorMessage = formatUpstreamError(response.status, upstreamErrorDetail)
         }
 
         // For streaming responses, wrap the body to track tokens
