@@ -2,17 +2,27 @@ export default defineEventHandler(async (event) => {
   await requireAuth(event)
 
   const body = await readBody(event)
+  const startTime = Date.now()
   let authCookie: string
   try {
     authCookie = validateAuthCookieValue(body?.auth_cookie)
   } catch (error) {
+    const message = error instanceof Error ? error.message : 'Invalid auth cookie value'
+    void logOperation({
+      operation: 'add_account',
+      trigger_type: 'api',
+      status: 'error',
+      error_message: message,
+      request_detail: body,
+      response_detail: error,
+      duration_ms: Date.now() - startTime
+    })
     throw createError({
       statusCode: 400,
-      statusMessage: error instanceof Error ? error.message : 'Invalid auth cookie value'
+      statusMessage: message
     })
   }
 
-  const startTime = Date.now()
   try {
     const account = await withAuthCookieLocks([authCookie], () => createAccount({
       name: body.name,
@@ -29,6 +39,9 @@ export default defineEventHandler(async (event) => {
       trigger_type: 'api',
       account_id: account.id,
       status: 'success',
+      detail: `账号 #${account.id} 添加成功`,
+      request_detail: body,
+      response_detail: { success: true, account: toPublicAccount(account), message: '账号添加成功' },
       duration_ms: Date.now() - startTime
     })
 
@@ -43,6 +56,8 @@ export default defineEventHandler(async (event) => {
       trigger_type: 'api',
       status: 'error',
       error_message: error?.message || '添加账号失败',
+      request_detail: body,
+      response_detail: error,
       duration_ms: Date.now() - startTime
     })
 

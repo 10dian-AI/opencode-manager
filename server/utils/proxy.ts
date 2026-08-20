@@ -11,6 +11,7 @@ import { createAccountFetch } from './account-fetch'
 import { selectAffinityAccountId } from './proxy-affinity'
 import { invalidateUpstreamApiKey, markAccountRiskControlled } from './accounts'
 import { createCallLog } from './call-logs'
+import { headersForLog, serializeLogPayload } from './log-payload'
 
 const GO_BASE = 'https://opencode.ai/zen/go/v1'
 const ACCOUNT_ERROR_STATUSES = new Set([401, 403, 408, 409, 429])
@@ -67,39 +68,36 @@ function upstreamHeaders(event: H3Event, apiKey?: string) {
   return headers
 }
 
-function truncateErrorDetail(value: string) {
-  if (value.length <= UPSTREAM_ERROR_DETAIL_MAX_LENGTH) return value
-  return `${value.slice(0, UPSTREAM_ERROR_DETAIL_MAX_LENGTH)}...`
-}
-
-function recordValue(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' ? value as Record<string, unknown> : null
-}
-
-function stringValue(value: unknown) {
-  return typeof value === 'string' && value.trim() ? value.trim() : null
-}
-
-/** Read useful upstream diagnostics without consuming the response returned to the caller. */
-async function describeUpstreamError(response: Response): Promise<string> {
-  const requestId = response.headers.get('x-request-id') || response.headers.get('request-id')
-  let raw = ''
+async function readClonedResponseBody(response: Response) {
   try {
-    raw = await response.clone().text()
-  } catch {}
+    return await response.clone().text()
+  } catch {
+    return ''
+  }
+}
 
+function describeUpstreamError(response: Response, raw: string): string {
+  const requestId = response.headers.get('x-request-id') || response.headers.get('request-id')
   const compact = raw.replace(/\s+/g, ' ').trim()
   let detail = ''
   if (compact) {
     try {
-      const payload = recordValue(JSON.parse(raw))
-      const parsedError = payload?.error
-      const error = recordValue(parsedError)
-      const message = stringValue(error?.message)
-        || stringValue(parsedError)
-        || stringValue(payload?.message)
-      const type = stringValue(error?.type)
-      const code = stringValue(error?.code)
+      const payload = JSON.parse(raw) as {
+        error?: { message?: unknown; type?: unknown; code?: unknown } | string
+        message?: unknown
+      }
+      const error = typeof payload.error === 'object' && payload.error !== null
+        ? payload.error
+        : null
+      const message = typeof error?.message === 'string' && error.message.trim()
+        ? error.message.trim()
+        : typeof payload.error === 'string' && payload.error.trim()
+          ? payload.error.trim()
+          : typeof payload.message === 'string' && payload.message.trim()
+            ? payload.message.trim()
+            : null
+      const type = typeof error?.type === 'string' && error.type.trim() ? error.type.trim() : null
+      const code = typeof error?.code === 'string' && error.code.trim() ? error.code.trim() : null
       detail = [message, type && `type=${type}`, code && `code=${code}`]
         .filter(Boolean)
         .join(' | ')
@@ -107,7 +105,10 @@ async function describeUpstreamError(response: Response): Promise<string> {
     if (!detail) detail = compact
   }
 
-  const parts = [detail && truncateErrorDetail(detail), requestId && `request_id=${requestId.trim()}`]
+  const parts = [
+    detail && detail.slice(0, UPSTREAM_ERROR_DETAIL_MAX_LENGTH),
+    requestId && `request_id=${requestId.trim()}`
+  ]
     .filter(Boolean)
   return parts.join(' | ')
 }
@@ -118,6 +119,29 @@ function formatUpstreamError(status: number, detail: string) {
 
 function appendUpstreamErrorDetail(message: string, detail: string) {
   return detail ? `${message}: ${detail}` : message
+}
+
+function responseLogDetail(response: Response, body: string | null) {
+  return serializeLogPayload({
+    status: response.status,
+    status_text: response.statusText || null,
+    headers: headersForLog(response.headers),
+    body
+  })
+}
+
+function localResponseLogDetail(status: number, code: string, message: string, cause?: unknown) {
+  return serializeLogPayload({
+    status,
+    headers: { 'content-type': 'application/json' },
+    body: {
+      error: {
+        message,
+        code
+      },
+      cause: cause ?? null
+    }
+  })
 }
 
 function refreshAfterUpstreamError(accountId: number) {
@@ -279,6 +303,8 @@ export async function proxyChatCompletions(
     firstTokenTime: number | null
     statusCode: number | null
     errorMessage: string | null
+    requestDetail: string | null
+    responseDetail: string | null
   } = {
     modelName: null,
     accountId: null,
@@ -290,15 +316,25 @@ export async function proxyChatCompletions(
     createdPromptTokens: null,
     firstTokenTime: null,
     statusCode: null,
-    errorMessage: null
+    errorMessage: null,
+    requestDetail: null,
+    responseDetail: null
   }
 
   try {
     return await proxyWorkers.run(async () => {
       const body = await readRawBody(event)
+      const requestBody = body?.toString() || null
+      logData.requestDetail = serializeLogPayload({
+        method: event.node.req.method || 'POST',
+        incoming_url: event.node.req.url || null,
+        headers: headersForLog(event.node.req.headers || {}),
+        body: requestBody
+      })
       if (!body) {
         logData.statusCode = 400
         logData.errorMessage = 'Request body is required'
+        logData.responseDetail = localResponseLogDetail(400, 'invalid_request', 'Request body is required')
         return jsonError(400, 'Request body is required', 'invalid_request')
       }
 
@@ -319,6 +355,7 @@ export async function proxyChatCompletions(
       if (!slot) {
         logData.statusCode = 503
         logData.errorMessage = '号池中暂无可用账号，请稍后重试'
+        logData.responseDetail = localResponseLogDetail(503, 'pool_unavailable', logData.errorMessage)
         return jsonError(503, '号池中暂无可用账号，请稍后重试', 'pool_unavailable')
       }
       const { account, release: releaseAccountSlot } = slot
@@ -329,18 +366,33 @@ export async function proxyChatCompletions(
         const fetchImpl = await createAccountFetch(account)
         const firstTokenStartTime = Date.now()
         let firstTokenRecorded = false
+        const requestHeaders = upstreamHeaders(event, account.upstream_api_key!)
+        logData.requestDetail = serializeLogPayload({
+          method: 'POST',
+          incoming_url: event.node.req.url || null,
+          upstream_url: `${GO_BASE}/chat/completions`,
+          incoming_headers: headersForLog(event.node.req.headers || {}),
+          upstream_headers: headersForLog(requestHeaders),
+          body: requestBody
+        })
 
         const response = await fetchImpl(`${GO_BASE}/chat/completions`, {
           method: 'POST',
-          headers: upstreamHeaders(event, account.upstream_api_key!),
+          headers: requestHeaders,
           body,
           signal: upstreamSignal
         })
 
         logData.statusCode = response.status
-        const upstreamErrorDetail = !response.ok
-          ? await describeUpstreamError(response)
+        const upstreamResponseBody = !response.ok
+          ? await readClonedResponseBody(response)
           : ''
+        const upstreamErrorDetail = !response.ok
+          ? describeUpstreamError(response, upstreamResponseBody)
+          : ''
+        logData.responseDetail = !response.ok
+          ? responseLogDetail(response, upstreamResponseBody || null)
+          : null
 
         if (response.status === 401) {
           logData.errorMessage = appendUpstreamErrorDetail(
@@ -375,11 +427,15 @@ export async function proxyChatCompletions(
           let logged = false
           const decoder = new TextDecoder()
           let sseBuffer = ''
+          const responseBodyParts: string[] = []
 
           const logOnce = () => {
             if (logged) return
             logged = true
             void logCallCompletion(apiKeyInfo, logData, callerIp, startTime)
+          }
+          const finalizeResponseLog = () => {
+            logData.responseDetail = responseLogDetail(response, responseBodyParts.join('') || null)
           }
           const processSseLine = (line: string) => {
             if (!line.startsWith('data: ') || line.includes('[DONE]')) return
@@ -427,21 +483,28 @@ export async function proxyChatCompletions(
               try {
                 const chunk = await reader.read()
                 if (chunk.done) {
-                  consumeSseText(decoder.decode(), true)
+                  const tail = decoder.decode()
+                  if (tail) responseBodyParts.push(tail)
+                  consumeSseText(tail, true)
+                  finalizeResponseLog()
                   finish()
                   controller.close()
                   logOnce()
                 } else {
-                  consumeSseText(decoder.decode(chunk.value, { stream: true }))
+                  const text = decoder.decode(chunk.value, { stream: true })
+                  responseBodyParts.push(text)
+                  consumeSseText(text)
                   controller.enqueue(chunk.value)
                 }
               } catch (error) {
+                finalizeResponseLog()
                 finish()
                 controller.error(error)
                 logOnce()
               }
             },
             async cancel(reason) {
+              finalizeResponseLog()
               finish()
               await reader.cancel(reason).catch(() => {})
               logOnce()
@@ -458,7 +521,9 @@ export async function proxyChatCompletions(
           if (response.ok && !logData.isStream) {
             const clonedResponse = response.clone()
             try {
-              const data = await clonedResponse.json()
+              const responseBody = await clonedResponse.text()
+              logData.responseDetail = responseLogDetail(response, responseBody || null)
+              const data = JSON.parse(responseBody)
               if (data.usage) {
                 logData.promptTokens = data.usage.prompt_tokens || null
                 logData.completionTokens = data.usage.completion_tokens || null
@@ -467,6 +532,9 @@ export async function proxyChatCompletions(
               }
               logData.firstTokenTime = Date.now() - firstTokenStartTime
             } catch {}
+          }
+          if (!logData.responseDetail) {
+            logData.responseDetail = responseLogDetail(response, null)
           }
 
           const result = responseHoldingAccountSlot(response, releaseAccountSlot, upstreamSignal)
@@ -485,29 +553,34 @@ export async function proxyChatCompletions(
     if (error instanceof ProxyRequestAbortedError) {
       logData.statusCode = 499
       logData.errorMessage = '客户端已关闭请求'
+      logData.responseDetail = localResponseLogDetail(499, 'client_closed_request', logData.errorMessage, error)
       await logCallCompletion(apiKeyInfo, logData, callerIp, startTime)
       return jsonError(499, '客户端已关闭请求', 'client_closed_request')
     }
     if (upstreamTimeoutSignal.aborted) {
       logData.statusCode = 504
       logData.errorMessage = '上游请求超时'
+      logData.responseDetail = localResponseLogDetail(504, 'upstream_timeout', logData.errorMessage, error)
       await logCallCompletion(apiKeyInfo, logData, callerIp, startTime)
       return jsonError(504, '上游请求超时', 'upstream_timeout')
     }
     if (error instanceof ProxyQueueTimeoutError) {
       logData.statusCode = 503
       logData.errorMessage = '代理队列等待超时，请稍后重试'
+      logData.responseDetail = localResponseLogDetail(503, 'proxy_queue_timeout', logData.errorMessage, error)
       await logCallCompletion(apiKeyInfo, logData, callerIp, startTime)
       return jsonError(503, '代理队列等待超时，请稍后重试', 'proxy_queue_timeout')
     }
     if (error instanceof ProxyPoolSaturatedError) {
       logData.statusCode = 503
       logData.errorMessage = '代理队列已满，请稍后重试'
+      logData.responseDetail = localResponseLogDetail(503, 'proxy_saturated', logData.errorMessage, error)
       await logCallCompletion(apiKeyInfo, logData, callerIp, startTime)
       return jsonError(503, '代理队列已满，请稍后重试', 'proxy_saturated')
     }
     logData.statusCode = 500
     logData.errorMessage = '代理服务失败'
+    logData.responseDetail = localResponseLogDetail(500, 'proxy_worker_error', logData.errorMessage, error)
     await logCallCompletion(apiKeyInfo, logData, callerIp, startTime)
     return jsonError(500, '代理服务失败', 'proxy_worker_error')
   }
@@ -527,6 +600,8 @@ async function logCallCompletion(
     firstTokenTime: number | null
     statusCode: number | null
     errorMessage: string | null
+    requestDetail: string | null
+    responseDetail: string | null
   },
   callerIp: string | null,
   startTime: number
@@ -558,7 +633,9 @@ async function logCallCompletion(
       response_time_ms: responseTimeMs,
       caller_ip: callerIp,
       status_code: logData.statusCode,
-      error_message: logData.errorMessage
+      error_message: logData.errorMessage,
+      request_detail: logData.requestDetail,
+      response_detail: logData.responseDetail
     })
   } catch (error) {
     // Log silently fails to not affect the main request

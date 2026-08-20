@@ -10,6 +10,8 @@ interface OperationLog {
   status: string
   detail: string | null
   error_message: string | null
+  request_detail: string | null
+  response_detail: string | null
   duration_ms: number | null
   created_at: string
 }
@@ -121,6 +123,19 @@ function getStatusLabel(status: string) {
   return status
 }
 
+function formatLogPayload(value: string | null) {
+  if (!value) return '-'
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2)
+  } catch {
+    return value
+  }
+}
+
+function logSummary(log: OperationLog) {
+  return log.error_message || log.detail || (log.status === 'success' ? '操作成功，点击查看完整响应' : '点击查看完整日志')
+}
+
 const selectedLog = ref<OperationLog | null>(null)
 const detailDialogOpen = ref(false)
 
@@ -191,11 +206,11 @@ watch(page, fetchLogs)
         </template>
         <template #detail_col-cell="{ row }">
           <div class="flex items-center gap-2">
-            <span class="max-w-56 truncate text-xs text-muted" :title="row.original.detail || row.original.error_message || ''">
-              {{ row.original.error_message || row.original.detail || '-' }}
+            <span class="max-w-56 truncate text-xs text-muted" :title="logSummary(row.original)">
+              {{ logSummary(row.original) }}
             </span>
             <UButton
-              v-if="row.original.error_message || row.original.detail"
+              v-if="row.original.error_message || row.original.detail || row.original.request_detail || row.original.response_detail"
               icon="i-lucide-file-search"
               color="neutral"
               variant="ghost"
@@ -243,6 +258,14 @@ watch(page, fetchLogs)
           <div v-if="selectedLog.detail">
             <p class="mb-2 text-sm font-medium">详情</p>
             <pre class="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-default bg-elevated p-3 text-xs">{{ selectedLog.detail }}</pre>
+          </div>
+          <div>
+            <p class="mb-2 text-sm font-medium">完整请求</p>
+            <pre class="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-default bg-elevated p-3 text-xs">{{ formatLogPayload(selectedLog.request_detail) }}</pre>
+          </div>
+          <div>
+            <p class="mb-2 text-sm font-medium">完整响应</p>
+            <pre class="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-default bg-elevated p-3 text-xs">{{ formatLogPayload(selectedLog.response_detail) }}</pre>
           </div>
           <div v-if="selectedLog.error_message">
             <p class="mb-2 text-sm font-medium">错误信息</p>

@@ -1,4 +1,5 @@
 import { getDb } from './db'
+import { serializeLogPayload } from './log-payload'
 
 export interface OperationLogEntry {
   operation: string
@@ -10,13 +11,17 @@ export interface OperationLogEntry {
   status: 'success' | 'error' | 'partial'
   detail?: string | null
   error_message?: string | null
+  request_detail?: unknown
+  response_detail?: unknown
   blocked_at?: string | null
   duration_ms?: number | null
 }
 
-export interface OperationLog extends OperationLogEntry {
+export interface OperationLog extends Omit<OperationLogEntry, 'request_detail' | 'response_detail'> {
   id: number
   account_ids: string | null
+  request_detail: string | null
+  response_detail: string | null
   created_at: string
 }
 
@@ -30,6 +35,8 @@ const SCHEMA_SQL = `
     status TEXT NOT NULL,
     detail TEXT,
     error_message TEXT,
+    request_detail TEXT,
+    response_detail TEXT,
     blocked_at TEXT,
     duration_ms INTEGER,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -42,6 +49,11 @@ async function ensureSchema() {
   if (schemaInitialized) return
   const db = await getDb()
   await db.query(SCHEMA_SQL)
+  await db.query(`
+    ALTER TABLE operation_logs
+      ADD COLUMN IF NOT EXISTS request_detail TEXT,
+      ADD COLUMN IF NOT EXISTS response_detail TEXT
+  `)
   schemaInitialized = true
 }
 
@@ -50,10 +62,25 @@ export async function logOperation(opts: OperationLogEntry): Promise<void> {
     await ensureSchema()
     const db = await getDb()
     const accountIdsJson = opts.account_ids || null
+    const requestDetail = serializeLogPayload(opts.request_detail ?? {
+      operation: opts.operation,
+      trigger_type: opts.trigger_type,
+      account_id: opts.account_id ?? null,
+      account_ids: accountIdsJson ? (() => {
+        try { return JSON.parse(accountIdsJson) } catch { return accountIdsJson }
+      })() : null
+    })
+    const responseDetail = serializeLogPayload(opts.response_detail ?? {
+      status: opts.status,
+      detail: opts.detail ?? null,
+      error_message: opts.error_message ?? null,
+      blocked_at: opts.blocked_at ?? null
+    })
     await db.query(
       `INSERT INTO operation_logs
-        (operation, trigger_type, account_id, account_ids, status, detail, error_message, blocked_at, duration_ms)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        (operation, trigger_type, account_id, account_ids, status, detail, error_message,
+         request_detail, response_detail, blocked_at, duration_ms)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
       [
         opts.operation,
         opts.trigger_type,
@@ -62,6 +89,8 @@ export async function logOperation(opts: OperationLogEntry): Promise<void> {
         opts.status,
         opts.detail ?? null,
         opts.error_message ?? null,
+        requestDetail,
+        responseDetail,
         opts.blocked_at ?? null,
         opts.duration_ms ?? null
       ]

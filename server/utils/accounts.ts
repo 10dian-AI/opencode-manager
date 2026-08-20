@@ -263,6 +263,8 @@ export function enableAccountChineseModels(id: number): Promise<Account> {
         account_id: id,
         status: 'success',
         detail: `账号 #${id} 中国模型已开启`,
+        request_detail: { account_id: id, enable: true },
+        response_detail: { account: updated },
         duration_ms: Date.now() - start
       })
       return updated
@@ -278,6 +280,8 @@ export function enableAccountChineseModels(id: number): Promise<Account> {
         account_id: id,
         status: 'error',
         error_message: message,
+        request_detail: { account_id: id, enable: true },
+        response_detail: error,
         duration_ms: Date.now() - start
       })
       throw createError({ statusCode: 502, statusMessage: message })
@@ -311,6 +315,8 @@ export function toggleAccountChineseModels(id: number, enable: boolean): Promise
         account_id: id,
         status: 'success',
         detail: `账号 #${id} 中国模型已${enable ? '开启' : '关闭'}`,
+        request_detail: { account_id: id, enable },
+        response_detail: { account: updated },
         duration_ms: Date.now() - startedAt
       })
       return updated
@@ -327,6 +333,8 @@ export function toggleAccountChineseModels(id: number, enable: boolean): Promise
         account_id: id,
         status: 'error',
         error_message: message,
+        request_detail: { account_id: id, enable },
+        response_detail: error,
         duration_ms: Date.now() - startedAt
       })
       throw createError({ statusCode: 502, statusMessage: message })
@@ -721,7 +729,9 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
       trigger_type: options.triggerType || 'api',
       account_id: id,
       status: 'success',
-      detail: `账号 #${id} 刷新成功，状态：${status}`
+      detail: `账号 #${id} 刷新成功，状态：${status}`,
+      request_detail: { account_id: id, trigger_type: options.triggerType || 'api' },
+      response_detail: { account: saved }
     })
     // 刷新成功后，若为会员则后台自动开启中国模型（fire-and-forget，受节流约束）。
     if (saved.subscription_status === 'active') {
@@ -758,7 +768,9 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
       trigger_type: options.triggerType || 'api',
       account_id: id,
       status: 'error',
-      error_message: message
+      error_message: message,
+      request_detail: { account_id: id, trigger_type: options.triggerType || 'api' },
+      response_detail: err
     })
     if (options.throwOnError) throw err
     return failedAccount
@@ -916,6 +928,8 @@ export function checkAccountRiskControl(id: number): Promise<RiskControlCheckRes
         detail: inspection.blocked
           ? `账号 #${id} 命中风控`
           : `账号 #${id} 风控检测完成，上游状态 ${response.status}`,
+        request_detail: { account_id: id },
+        response_detail: { ...result, account: result.account },
         duration_ms: Date.now() - startedAt
       })
       return result
@@ -927,6 +941,8 @@ export function checkAccountRiskControl(id: number): Promise<RiskControlCheckRes
         account_id: id,
         status: 'error',
         error_message: message,
+        request_detail: { account_id: id },
+        response_detail: error,
         duration_ms: Date.now() - startedAt
       })
       throw error
@@ -1044,6 +1060,8 @@ export function useAccountReferralReward(id: number, referralId: string) {
         account_id: id,
         status: 'success',
         detail: `账号 #${id} 已使用推广奖励 ${result.rewardId}`,
+        request_detail: { account_id: id, referral_id: referralId },
+        response_detail: result,
         duration_ms: Date.now() - startedAt
       })
       return result
@@ -1055,6 +1073,8 @@ export function useAccountReferralReward(id: number, referralId: string) {
         account_id: id,
         status: 'error',
         error_message: message,
+        request_detail: { account_id: id, referral_id: referralId },
+        response_detail: error,
         duration_ms: Date.now() - startedAt
       })
       throw error
@@ -1181,6 +1201,8 @@ async function cancelAccountRenewalOnce(id: number) {
       detail: cancellation.alreadyCancelled
         ? `账号 #${id} 续费已取消（之前已取消）`
         : `账号 #${id} 续费取消成功`,
+      request_detail: { account_id: id },
+      response_detail: cancellation,
       duration_ms: Date.now() - start
     })
 
@@ -1216,6 +1238,8 @@ async function cancelAccountRenewalOnce(id: number) {
       account_id: id,
       status: 'error',
       error_message: message,
+      request_detail: { account_id: id },
+      response_detail: error,
       duration_ms: Date.now() - start
     })
     throw error

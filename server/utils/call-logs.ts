@@ -19,6 +19,8 @@ export interface CallLog {
   caller_ip: string | null
   status_code: number | null
   error_message: string | null
+  request_detail: string | null
+  response_detail: string | null
   created_at: string
 }
 
@@ -29,8 +31,8 @@ export async function createCallLog(log: Omit<CallLog, 'id' | 'created_at'>): Pr
       timestamp, api_key_id, api_key_prefix, model_name, account_id, account_name,
       is_stream, prompt_tokens, completion_tokens, cached_prompt_tokens,
       created_prompt_tokens, throughput, first_token_time_ms, response_time_ms,
-      caller_ip, status_code, error_message
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+      caller_ip, status_code, error_message, request_detail, response_detail
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
     [
       log.timestamp,
       log.api_key_id,
@@ -48,7 +50,9 @@ export async function createCallLog(log: Omit<CallLog, 'id' | 'created_at'>): Pr
       log.response_time_ms,
       log.caller_ip,
       log.status_code,
-      log.error_message
+      log.error_message,
+      log.request_detail,
+      log.response_detail
     ]
   )
 }

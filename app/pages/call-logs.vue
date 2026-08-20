@@ -136,6 +136,15 @@ function formatTiming(log: CallLog) {
   return parts.length ? parts.join(' · ') : '-'
 }
 
+function formatLogPayload(value: string | null) {
+  if (!value) return '-'
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2)
+  } catch {
+    return value
+  }
+}
+
 function getStatusColor(statusCode: number | null) {
   return statusCode === null ? 'neutral' : (statusColorMap[statusCode] || 'neutral')
 }
@@ -226,11 +235,19 @@ watch(page, fetchLogs)
             <dt class="text-muted">Tokens</dt><dd>{{ formatTokens(selectedLog) }}</dd>
             <dt class="text-muted">耗时</dt><dd>{{ formatTiming(selectedLog) }}</dd>
           </dl>
+          <div>
+            <p class="mb-2 text-sm font-medium">完整请求</p>
+            <pre class="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-default bg-elevated p-3 text-xs">{{ formatLogPayload(selectedLog.request_detail) }}</pre>
+          </div>
+          <div>
+            <p class="mb-2 text-sm font-medium">完整响应</p>
+            <pre class="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-default bg-elevated p-3 text-xs">{{ formatLogPayload(selectedLog.response_detail) }}</pre>
+          </div>
           <div v-if="selectedLog.error_message">
             <p class="mb-2 text-sm font-medium">错误信息</p>
             <pre class="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-error/20 bg-error/5 p-3 text-xs text-error">{{ selectedLog.error_message }}</pre>
           </div>
-          <UAlert v-else color="success" variant="subtle" icon="i-lucide-circle-check" title="本次调用未记录错误" />
+          <UAlert v-else color="success" variant="subtle" icon="i-lucide-circle-check" title="本次调用完成" description="完整响应内容已记录在上方。" />
         </div>
       </template>
     </UModal>

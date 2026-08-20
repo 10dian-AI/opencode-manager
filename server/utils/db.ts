@@ -315,6 +315,8 @@ const SCHEMA_SQL = `
     caller_ip TEXT,
     status_code INTEGER,
     error_message TEXT,
+    request_detail TEXT,
+    response_detail TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   );
 
@@ -354,6 +356,8 @@ const SCHEMA_SQL = `
     status TEXT NOT NULL,
     detail TEXT,
     error_message TEXT,
+    request_detail TEXT,
+    response_detail TEXT,
     blocked_at TEXT,
     duration_ms INTEGER,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -460,6 +464,8 @@ async function migrateCallLogsSchema(client: SqlClient) {
       ADD COLUMN IF NOT EXISTS caller_ip TEXT,
       ADD COLUMN IF NOT EXISTS status_code INTEGER,
       ADD COLUMN IF NOT EXISTS error_message TEXT,
+      ADD COLUMN IF NOT EXISTS request_detail TEXT,
+      ADD COLUMN IF NOT EXISTS response_detail TEXT,
       ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   `)
 }
