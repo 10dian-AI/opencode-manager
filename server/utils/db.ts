@@ -662,7 +662,10 @@ export async function deleteAccounts(ids: number[]) {
 
 export async function deleteNonMemberAccounts() {
   const result = await query(
-    `DELETE FROM accounts WHERE subscription_status IS NOT NULL AND subscription_status <> 'active'`
+    `DELETE FROM accounts
+     WHERE is_abandoned IS NOT TRUE
+       AND subscription_status IS NOT NULL
+       AND subscription_status <> 'active'`
   )
   return { changes: result.rowCount }
 }

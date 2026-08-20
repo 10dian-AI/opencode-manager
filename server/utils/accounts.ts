@@ -10,7 +10,8 @@ import {
   type AccountRefreshProgressReporter
 } from './account-refresh-progress'
 import { validateAuthCookieValue } from './auth-cookie'
-import { AuthCookieExpiredError, buildAuthCookie, type OpenCodeAccountInfo, cancelOpenCodeSubscriptionRenewal, fetchOpenCodeAccount } from './opencode'
+import { AuthCookieExpiredError, type OpenCodeAccountInfo, fetchOpenCodeAccount } from './opencode'
+import { cancelAutorenewWithScript } from './cancel-autorenew'
 import { createAccountFetch } from './account-fetch'
 import { ensureAccountIpAssignment } from './ip-pool'
 import { toggleChineseModels } from './opencode-chinese-models'
@@ -119,13 +120,13 @@ export async function deleteManagedAccounts(ids: number[]) {
 
 export async function deleteManagedNonMemberAccounts() {
   const ids = (await listAccounts())
-    .filter(account => account.subscription_status !== null && account.subscription_status !== 'active')
+    .filter(account => !account.is_abandoned && account.subscription_status !== null && account.subscription_status !== 'active')
     .map(account => account.id)
   if (!ids.length) return { changes: 0 }
   return withAccountLocks(ids, async () => {
     const current = await getAccountsByIds(ids)
     const eligibleIds = current
-      .filter(account => account.subscription_status !== null && account.subscription_status !== 'active')
+      .filter(account => !account.is_abandoned && account.subscription_status !== null && account.subscription_status !== 'active')
       .map(account => account.id)
     if (!eligibleIds.length) return { changes: 0 }
     const result = await deleteAccounts(eligibleIds)
@@ -602,33 +603,29 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
         checkExpired
 
       if (shouldCheck) {
-        if (!info.billingPortalServerId) {
+        try {
+          const cancellation = await cancelAutorenewWithScript(
+            account.auth_cookie,
+            workspaceId
+          )
+          const cancelledAt = new Date().toISOString()
+          const subscriptionId = cancellation.subscriptionId || info.liteSubscriptionId
+          subscriptionUpdate.cancelled_subscription_id = subscriptionId
+          subscriptionUpdate.subscription_cancelled_at =
+            cancellation.alreadyCancelled &&
+            account.cancelled_subscription_id === subscriptionId &&
+            account.subscription_cancelled_at
+              ? account.subscription_cancelled_at
+              : cancelledAt
+          subscriptionUpdate.subscription_cancel_checked_at = cancelledAt
+          subscriptionUpdate.subscription_ends_at = cancellation.currentPeriodEnd
+          subscriptionUpdate.subscription_cancel_error = null
+        } catch (error) {
+          subscriptionUpdate.cancelled_subscription_id = null
+          subscriptionUpdate.subscription_cancelled_at = null
+          subscriptionUpdate.subscription_ends_at = null
           subscriptionUpdate.subscription_cancel_error =
-            'Active subscription found, but the billing portal action could not be resolved'
-        } else {
-          try {
-            const cancellation = await cancelOpenCodeSubscriptionRenewal(
-              account.auth_cookie,
-              workspaceId,
-              info.liteSubscriptionId,
-              info.billingPortalServerId,
-              fetchImpl
-            )
-            const cancelledAt = new Date().toISOString()
-            subscriptionUpdate.cancelled_subscription_id = info.liteSubscriptionId
-            subscriptionUpdate.subscription_cancelled_at =
-              cancellation.alreadyCancelled &&
-              account.cancelled_subscription_id === info.liteSubscriptionId &&
-              account.subscription_cancelled_at
-                ? account.subscription_cancelled_at
-                : cancelledAt
-            subscriptionUpdate.subscription_cancel_checked_at = cancelledAt
-            subscriptionUpdate.subscription_ends_at = cancellation.currentPeriodEnd
-            subscriptionUpdate.subscription_cancel_error = null
-          } catch (error) {
-            subscriptionUpdate.subscription_cancel_error =
-              error instanceof Error ? error.message : String(error)
-          }
+            error instanceof Error ? error.message : String(error)
         }
       }
     }
@@ -1148,25 +1145,25 @@ async function cancelAccountRenewalOnce(id: number) {
     if (!account) {
       throw createError({ statusCode: 404, statusMessage: 'Account not found' })
     }
-    const fetchImpl = await createAccountFetch(account)
-    const info = await fetchOpenCodeAccount(account.auth_cookie, account.workspace_id, fetchImpl)
-    if (info.subscriptionStatus !== 'active') {
-      throw createError({ statusCode: 409, statusMessage: 'Account does not have an active subscription' })
+    let workspaceId = account.workspace_id
+    if (!workspaceId) {
+      const fetchImpl = await createAccountFetch(account)
+      workspaceId = (await fetchOpenCodeAccount(account.auth_cookie, null, fetchImpl)).workspaceId
     }
-    if (!info.workspaceId || !info.liteSubscriptionId || !info.billingPortalServerId) {
+    if (!workspaceId) {
       throw createError({ statusCode: 502, statusMessage: 'Subscription cancellation action could not be resolved' })
     }
 
-    const cancellation = await cancelOpenCodeSubscriptionRenewal(
+    const cancellation = await cancelAutorenewWithScript(
       account.auth_cookie,
-      info.workspaceId,
-      info.liteSubscriptionId,
-      info.billingPortalServerId,
-      fetchImpl
+      workspaceId
     )
+    if (!cancellation.subscriptionId) {
+      throw createError({ statusCode: 502, statusMessage: 'Cancellation script did not return a subscription' })
+    }
     const checkedAt = new Date().toISOString()
     await updateAccount(id, {
-      cancelled_subscription_id: info.liteSubscriptionId,
+      cancelled_subscription_id: cancellation.subscriptionId,
       subscription_cancelled_at:
         cancellation.alreadyCancelled && account.subscription_cancelled_at
           ? account.subscription_cancelled_at
@@ -1187,10 +1184,17 @@ async function cancelAccountRenewalOnce(id: number) {
       duration_ms: Date.now() - start
     })
 
-    const refreshedAccount = await refreshAccountOnce(id, {
-      skipReferralRewards: true,
-      triggerType: 'api'
-    })
+    let refreshedAccount = (await getAccount(id))!
+    try {
+      refreshedAccount = await refreshAccountOnce(id, {
+        skipReferralRewards: true,
+        triggerType: 'api'
+      })
+    } catch (refreshError) {
+      // The script already verified Stripe; a secondary account refresh must not
+      // turn a confirmed cancellation into a false failure.
+      console.error(`Account ${id} refresh after cancellation failed:`, refreshError)
+    }
     await updateAccountPollSchedule(refreshedAccount)
     return {
       account: refreshedAccount,
@@ -1200,7 +1204,10 @@ async function cancelAccountRenewalOnce(id: number) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     await updateAccount(id, {
+      cancelled_subscription_id: null,
+      subscription_cancelled_at: null,
       subscription_cancel_checked_at: new Date().toISOString(),
+      subscription_ends_at: null,
       subscription_cancel_error: message
     }).catch(() => {})
     void logOperation({

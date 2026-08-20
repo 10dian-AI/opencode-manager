@@ -1,4 +1,5 @@
 import type { Account } from '../utils/db'
+import { classifyAccounts } from '../utils/account-stats'
 import {
   effectiveRemainingAmount,
   QUOTA_LIMITS_USD,
@@ -8,30 +9,11 @@ import {
 
 export default defineEventHandler(async (event) => {
   await requireAuth(event)
-  const accounts = await listAccounts()
-
-  const members = accounts.filter(account =>
-    !account.is_abandoned && account.subscription_status === 'active'
-  )
-  const availableAccounts = accounts.filter(account =>
-    !account.is_abandoned &&
-    account.status === 'active' &&
-    account.subscription_status === 'active' &&
-    Boolean(account.upstream_api_key)
-  )
-  const availableMembers = availableAccounts
-  const abnormalAccounts = accounts.filter(account =>
-    account.status === 'error' || account.disabled_reason === 'risk_control'
-  )
-  const nonMembers = accounts.filter(account =>
-    !account.is_abandoned &&
-    account.subscription_status !== null &&
-    account.subscription_status !== 'active'
-  )
-  const abandoned = accounts.filter(account => account.is_abandoned)
+  const categories = classifyAccounts(await listAccounts())
+  const availableAccounts = categories.availableAccounts
 
   const totalEffectiveRemaining = Math.round(
-    availableMembers.reduce((sum, account) => sum + effectiveRemainingAmount({
+    availableAccounts.reduce((sum, account) => sum + effectiveRemainingAmount({
       rollingUsage: account.rolling_usage,
       weeklyUsage: account.weekly_usage,
       monthlyUsage: account.monthly_usage
@@ -39,26 +21,31 @@ export default defineEventHandler(async (event) => {
   ) / 100
 
   return {
-    total: accounts.length,
+    total: categories.total,
+    poolTotal: categories.poolTotal,
     active: availableAccounts.length,
-    error: abnormalAccounts.length,
-    riskControlled: accounts.filter(account => account.disabled_reason === 'risk_control').length,
-    disabled: accounts.filter(account => account.status === 'disabled').length,
-    pending: accounts.filter(account => account.status === 'pending').length,
-    members: members.length,
-    nonMembers: nonMembers.length,
-    abandoned: abandoned.length,
-    available: availableMembers.length,
-    avgRollingRemaining: avgRemaining(availableMembers.map(account => account.rolling_usage)),
-    avgWeeklyRemaining: avgRemaining(availableMembers.map(account => account.weekly_usage)),
-    avgMonthlyRemaining: avgRemaining(availableMembers.map(account => account.monthly_usage)),
+    error: categories.error,
+    riskControlled: categories.riskControlled,
+    notRiskControlled: categories.notRiskControlled,
+    disabled: categories.disabled,
+    pending: categories.pending,
+    members: categories.members,
+    nonMembers: categories.nonMembers,
+    membershipUnknown: categories.membershipUnknown,
+    abandoned: categories.abandoned,
+    abandonedRiskControlled: categories.abandonedRiskControlled,
+    abandonedMonthlyExhausted: categories.abandonedMonthlyExhausted,
+    available: availableAccounts.length,
+    avgRollingRemaining: avgRemaining(availableAccounts.map(account => account.rolling_usage)),
+    avgWeeklyRemaining: avgRemaining(availableAccounts.map(account => account.weekly_usage)),
+    avgMonthlyRemaining: avgRemaining(availableAccounts.map(account => account.monthly_usage)),
     totalBalance: availableAccounts.reduce((sum, account) => sum + (account.balance || 0), 0),
-    rollingRemainingAmount: sumRemaining(availableMembers, 'rolling_usage', QUOTA_LIMITS_USD.rolling),
-    weeklyRemainingAmount: sumRemaining(availableMembers, 'weekly_usage', QUOTA_LIMITS_USD.weekly),
-    monthlyRemainingAmount: sumRemaining(availableMembers, 'monthly_usage', QUOTA_LIMITS_USD.monthly),
-    rollingLimitAmount: knownLimit(availableMembers, 'rolling_usage', QUOTA_LIMITS_USD.rolling),
-    weeklyLimitAmount: knownLimit(availableMembers, 'weekly_usage', QUOTA_LIMITS_USD.weekly),
-    monthlyLimitAmount: knownLimit(availableMembers, 'monthly_usage', QUOTA_LIMITS_USD.monthly),
+    rollingRemainingAmount: sumRemaining(availableAccounts, 'rolling_usage', QUOTA_LIMITS_USD.rolling),
+    weeklyRemainingAmount: sumRemaining(availableAccounts, 'weekly_usage', QUOTA_LIMITS_USD.weekly),
+    monthlyRemainingAmount: sumRemaining(availableAccounts, 'monthly_usage', QUOTA_LIMITS_USD.monthly),
+    rollingLimitAmount: knownLimit(availableAccounts, 'rolling_usage', QUOTA_LIMITS_USD.rolling),
+    weeklyLimitAmount: knownLimit(availableAccounts, 'weekly_usage', QUOTA_LIMITS_USD.weekly),
+    monthlyLimitAmount: knownLimit(availableAccounts, 'monthly_usage', QUOTA_LIMITS_USD.monthly),
     totalEffectiveRemaining
   }
 })

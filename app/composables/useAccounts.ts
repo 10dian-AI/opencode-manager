@@ -45,14 +45,19 @@ export interface Account {
 
 export interface Stats {
   total: number
+  poolTotal: number
   active: number
   error: number
   riskControlled: number
+  notRiskControlled: number
   disabled: number
   pending: number
   members: number
   nonMembers: number
+  membershipUnknown: number
   abandoned: number
+  abandonedRiskControlled: number
+  abandonedMonthlyExhausted: number
   available: number
   avgRollingRemaining: number
   avgWeeklyRemaining: number

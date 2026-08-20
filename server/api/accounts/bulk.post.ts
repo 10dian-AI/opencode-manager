@@ -94,8 +94,7 @@ export default defineEventHandler(async (event) => {
     const eligibleIds = accounts
       .filter(account =>
         account?.status === 'active' &&
-        account?.subscription_status === 'active' &&
-        !account?.subscription_cancelled_at
+        account?.subscription_status === 'active'
       )
       .map(account => account!.id)
     const results = await Promise.allSettled(

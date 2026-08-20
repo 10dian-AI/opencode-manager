@@ -66,7 +66,7 @@ const enablingAllChinese = ref(false)
 const disablingAllChinese = ref(false)
 const syncingChineseModelsStatus = ref(false)
 const cancellingAllRenewals = ref(false)
-const membershipFilter = ref<'all' | 'member' | 'non-member'>('all')
+const membershipFilter = ref<'all' | 'member' | 'non-member' | 'unknown'>('all')
 const riskControlFilter = ref<'all' | 'risk-controlled' | 'not-risk-controlled'>('all')
 const selectedAccountIds = ref<number[]>([])
 const bulkAction = ref<AccountBatchAction | null>(null)
@@ -97,7 +97,8 @@ const filteredAccounts = computed(() => {
     const matchesMembership =
       membershipFilter.value === 'all' ||
       (membershipFilter.value === 'member' && account.subscription_status === 'active') ||
-      (membershipFilter.value === 'non-member' && Boolean(account.subscription_status) && account.subscription_status !== 'active')
+      (membershipFilter.value === 'non-member' && Boolean(account.subscription_status) && account.subscription_status !== 'active') ||
+      (membershipFilter.value === 'unknown' && account.subscription_status === null)
     const isRiskControlled = account.disabled_reason === 'risk_control'
     const matchesRiskControl =
       riskControlFilter.value === 'all' ||
@@ -108,18 +109,16 @@ const filteredAccounts = computed(() => {
   })
 })
 
-const nonMemberCount = computed(() =>
-  accounts.value.filter(account => Boolean(account.subscription_status) && account.subscription_status !== 'active').length
-)
-const riskControlledCount = computed(() =>
-  stats.value?.riskControlled ??
-  accounts.value.filter(account => account.disabled_reason === 'risk_control').length
-)
+const poolAccountCount = computed(() => stats.value?.poolTotal ?? accounts.value.length)
+const memberCount = computed(() => stats.value?.members ?? 0)
+const nonMemberCount = computed(() => stats.value?.nonMembers ?? 0)
+const membershipUnknownCount = computed(() => stats.value?.membershipUnknown ?? 0)
+const riskControlledCount = computed(() => stats.value?.riskControlled ?? 0)
+const notRiskControlledCount = computed(() => stats.value?.notRiskControlled ?? 0)
 const activeSubscriptionsCount = computed(() =>
   accounts.value.filter(account =>
     account.status === 'active' &&
-    account.subscription_status === 'active' &&
-    !account.subscription_cancelled_at
+    account.subscription_status === 'active'
   ).length
 )
 
@@ -414,7 +413,7 @@ async function onEnableChineseModels(account: Account) {
   }
 }
 
-function setMembershipFilter(value: 'all' | 'member' | 'non-member') {
+function setMembershipFilter(value: 'all' | 'member' | 'non-member' | 'unknown') {
   membershipFilter.value = value
   selectedAccountIds.value = []
 }
@@ -747,8 +746,7 @@ async function onCancelAllRenewals() {
     const ids = accounts.value
       .filter(account =>
         account.status === 'active' &&
-        account.subscription_status === 'active' &&
-        !account.subscription_cancelled_at
+        account.subscription_status === 'active'
       )
       .map(account => account.id)
     if (!ids.length) {
@@ -1036,7 +1034,7 @@ async function exportKeys() {
           :disabled="!activeSubscriptionsCount || Boolean(batchProgress)"
           @click="onCancelAllRenewals"
         >
-          取消所有自动续费
+          取消全部自动续费
         </UButton>
         <UButton
           icon="i-lucide-download"
@@ -1126,15 +1124,16 @@ async function exportKeys() {
       <div class="flex flex-wrap items-center gap-x-5 gap-y-2">
         <div class="flex items-center gap-1">
           <span class="mr-1 text-xs text-muted">会员</span>
-          <UButton :variant="membershipFilter === 'all' ? 'soft' : 'ghost'" color="neutral" size="sm" @click="setMembershipFilter('all')">全部 {{ accounts.length }}</UButton>
-          <UButton :variant="membershipFilter === 'member' ? 'soft' : 'ghost'" color="neutral" size="sm" @click="setMembershipFilter('member')">会员 {{ accounts.length - nonMemberCount }}</UButton>
+          <UButton :variant="membershipFilter === 'all' ? 'soft' : 'ghost'" color="neutral" size="sm" @click="setMembershipFilter('all')">全部 {{ poolAccountCount }}</UButton>
+          <UButton :variant="membershipFilter === 'member' ? 'soft' : 'ghost'" color="neutral" size="sm" @click="setMembershipFilter('member')">会员 {{ memberCount }}</UButton>
           <UButton :variant="membershipFilter === 'non-member' ? 'soft' : 'ghost'" color="neutral" size="sm" @click="setMembershipFilter('non-member')">非会员 {{ nonMemberCount }}</UButton>
+          <UButton :variant="membershipFilter === 'unknown' ? 'soft' : 'ghost'" color="neutral" size="sm" @click="setMembershipFilter('unknown')">待确认 {{ membershipUnknownCount }}</UButton>
         </div>
         <div class="flex items-center gap-1">
           <span class="mr-1 text-xs text-muted">风控</span>
-          <UButton :variant="riskControlFilter === 'all' ? 'soft' : 'ghost'" color="neutral" size="sm" @click="setRiskControlFilter('all')">全部 {{ accounts.length }}</UButton>
+          <UButton :variant="riskControlFilter === 'all' ? 'soft' : 'ghost'" color="neutral" size="sm" @click="setRiskControlFilter('all')">全部 {{ poolAccountCount }}</UButton>
           <UButton :variant="riskControlFilter === 'risk-controlled' ? 'soft' : 'ghost'" color="error" size="sm" @click="setRiskControlFilter('risk-controlled')">风控中 {{ riskControlledCount }}</UButton>
-          <UButton :variant="riskControlFilter === 'not-risk-controlled' ? 'soft' : 'ghost'" color="neutral" size="sm" @click="setRiskControlFilter('not-risk-controlled')">未风控 {{ accounts.length - riskControlledCount }}</UButton>
+          <UButton :variant="riskControlFilter === 'not-risk-controlled' ? 'soft' : 'ghost'" color="neutral" size="sm" @click="setRiskControlFilter('not-risk-controlled')">未风控 {{ notRiskControlledCount }}</UButton>
         </div>
       </div>
       <UButton v-if="nonMemberCount" icon="i-lucide-trash-2" color="error" variant="outline" @click="onDeleteNonMembers">删除全部非会员</UButton>
@@ -1483,7 +1482,10 @@ async function exportKeys() {
             class="size-4 text-muted transition-transform"
             :class="{ 'rotate-180': abandonedExpanded }"
           />
-          <span class="font-medium text-highlighted">抛弃账号 {{ stats?.abandoned ?? 0 }} 个</span>
+          <span class="font-medium text-highlighted">抛弃账号</span>
+          <UBadge color="neutral" variant="subtle" size="sm">总数 {{ stats?.abandoned ?? 0 }}</UBadge>
+          <UBadge color="error" variant="subtle" size="sm">风控 {{ stats?.abandonedRiskControlled ?? 0 }}</UBadge>
+          <UBadge color="warning" variant="subtle" size="sm">月限额 {{ stats?.abandonedMonthlyExhausted ?? 0 }}</UBadge>
         </button>
         <UButton
           v-if="abandonedExpanded && abandonedFetched"
@@ -1816,10 +1818,10 @@ async function exportKeys() {
                 </p>
               </div>
               <UBadge v-if="actionAccount.subscription_cancelled_at" color="neutral" variant="subtle">
-                已关闭续费
+                已关闭续费（可重新核验）
               </UBadge>
               <UButton
-                v-else-if="!confirmCancellation"
+                v-if="!confirmCancellation"
                 icon="i-lucide-calendar-x"
                 color="error"
                 variant="soft"
@@ -1831,7 +1833,7 @@ async function exportKeys() {
             </div>
 
             <UAlert
-              v-if="confirmCancellation && !actionAccount.subscription_cancelled_at"
+              v-if="confirmCancellation"
               class="mt-4"
               color="error"
               variant="subtle"
