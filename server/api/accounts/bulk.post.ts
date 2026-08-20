@@ -93,7 +93,6 @@ export default defineEventHandler(async (event) => {
   if (action === 'cancel-renewal') {
     const eligibleIds = accounts
       .filter(account =>
-        account?.status === 'active' &&
         account?.subscription_status === 'active'
       )
       .map(account => account!.id)

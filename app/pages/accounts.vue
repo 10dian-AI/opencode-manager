@@ -66,6 +66,7 @@ const enablingAllChinese = ref(false)
 const disablingAllChinese = ref(false)
 const syncingChineseModelsStatus = ref(false)
 const cancellingAllRenewals = ref(false)
+const renewalScopeDialogOpen = ref(false)
 const membershipFilter = ref<'all' | 'member' | 'non-member' | 'unknown'>('all')
 const riskControlFilter = ref<'all' | 'risk-controlled' | 'not-risk-controlled'>('all')
 const selectedAccountIds = ref<number[]>([])
@@ -117,9 +118,11 @@ const riskControlledCount = computed(() => stats.value?.riskControlled ?? 0)
 const notRiskControlledCount = computed(() => stats.value?.notRiskControlled ?? 0)
 const activeSubscriptionsCount = computed(() =>
   accounts.value.filter(account =>
-    account.status === 'active' &&
     account.subscription_status === 'active'
   ).length
+)
+const abandonedActiveSubscriptionsCount = computed(() =>
+  abandonedAccounts.value.filter(account => account.subscription_status === 'active').length
 )
 
 function accountDisplayLabel(id: number) {
@@ -740,15 +743,25 @@ async function onSyncChineseModelsStatus() {
   }
 }
 
-async function onCancelAllRenewals() {
+function onCancelAllRenewals() {
+  renewalScopeDialogOpen.value = true
+}
+
+async function onCancelRenewals(scope: 'all' | 'non-abandoned') {
+  renewalScopeDialogOpen.value = false
   cancellingAllRenewals.value = true
   try {
-    const ids = accounts.value
-      .filter(account =>
-        account.status === 'active' &&
-        account.subscription_status === 'active'
-      )
-      .map(account => account.id)
+    const abandoned = scope === 'all' ? await fetchAbandonedAccounts() : []
+    if (scope === 'all') {
+      abandonedAccounts.value = abandoned
+      abandonedFetched.value = true
+    }
+    const candidates = [
+      ...new Map(
+        [...accounts.value, ...abandoned].map(account => [account.id, account])
+      ).values()
+    ].filter(account => account.subscription_status === 'active')
+    const ids = candidates.map(account => account.id)
     if (!ids.length) {
       toast.add({ title: '没有需要取消自动续费的账号', color: 'neutral' })
       return
@@ -757,12 +770,20 @@ async function onCancelAllRenewals() {
       ids,
       'cancel-renewal',
       progress => {
-        batchProgress.value = { label: '批量取消自动续费', ...progress }
-      }
+        batchProgress.value = {
+          label: `批量取消${scope === 'all' ? '全部账号' : '非抛弃账号'}自动续费`,
+          ...progress
+        }
+      },
+      abandoned
     )
     toast.add({
-      title: `已成功取消 ${result.succeeded} 个账号的自动续费`,
-      description: result.failed ? `${result.failed} 个账号操作失败` : undefined,
+      title: `已成功取消 ${result.succeeded} 个${scope === 'all' ? '账号' : '非抛弃账号'}的自动续费`,
+      description: result.failed
+        ? `${result.failed} 个账号操作失败`
+        : result.skipped
+          ? `跳过 ${result.skipped} 个未订阅账号`
+          : undefined,
       color: result.failed ? 'warning' : 'success'
     })
   } catch (e: any) {
@@ -770,6 +791,11 @@ async function onCancelAllRenewals() {
   } finally {
     cancellingAllRenewals.value = false
     batchProgress.value = null
+    if (scope === 'all') {
+      await loadAbandonedAccounts(true)
+    } else {
+      refreshAbandonedIfOpen()
+    }
   }
 }
 
@@ -1031,7 +1057,7 @@ async function exportKeys() {
           color="neutral"
           variant="outline"
           :loading="cancellingAllRenewals"
-          :disabled="!activeSubscriptionsCount || Boolean(batchProgress)"
+          :disabled="Boolean(batchProgress)"
           @click="onCancelAllRenewals"
         >
           取消全部自动续费
@@ -1870,6 +1896,64 @@ async function exportKeys() {
         <div class="flex justify-end">
           <UButton color="neutral" variant="ghost" :disabled="Boolean(accountAction)" @click="closeActionsModal">
             关闭
+          </UButton>
+        </div>
+      </template>
+    </UModal>
+
+    <UModal
+      v-model:open="renewalScopeDialogOpen"
+      title="选择取消自动续费范围"
+      :dismissible="!cancellingAllRenewals"
+    >
+      <template #body>
+        <div class="space-y-3">
+          <p class="text-sm text-muted">
+            请选择要执行的账号范围。脚本会逐个核验真实订阅状态，已取消的账号会幂等跳过。
+          </p>
+          <UButton
+            block
+            color="error"
+            variant="soft"
+            icon="i-lucide-users"
+            class="h-auto justify-start py-3"
+            :disabled="cancellingAllRenewals"
+            @click="onCancelRenewals('all')"
+          >
+            <span class="flex min-w-0 flex-col items-start text-left">
+              <span class="font-medium">所有账号</span>
+              <span class="text-xs font-normal opacity-80">
+                包含号池账号和抛弃账号（{{ activeSubscriptionsCount + abandonedActiveSubscriptionsCount }} 个已知会员）
+              </span>
+            </span>
+          </UButton>
+          <UButton
+            block
+            color="neutral"
+            variant="outline"
+            icon="i-lucide-user-round-check"
+            class="h-auto justify-start py-3"
+            :disabled="cancellingAllRenewals"
+            @click="onCancelRenewals('non-abandoned')"
+          >
+            <span class="flex min-w-0 flex-col items-start text-left">
+              <span class="font-medium">非抛弃账号</span>
+              <span class="text-xs font-normal text-muted">
+                仅处理当前号池中的账号（{{ activeSubscriptionsCount }} 个已知会员）
+              </span>
+            </span>
+          </UButton>
+        </div>
+      </template>
+      <template #footer>
+        <div class="flex justify-end">
+          <UButton
+            color="neutral"
+            variant="ghost"
+            :disabled="cancellingAllRenewals"
+            @click="renewalScopeDialogOpen = false"
+          >
+            取消
           </UButton>
         </div>
       </template>
