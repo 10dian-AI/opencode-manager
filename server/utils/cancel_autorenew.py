@@ -27,6 +27,7 @@ import http.cookiejar
 import json
 import os
 import re
+import ssl
 import sys
 import time
 import urllib.error
@@ -42,9 +43,24 @@ USER_AGENT = (
 SERVER_ID = "62ed095777d5415e71394df8ceda4f1141f0ecd5e330f484e4eb5dcfc5b0f1df"
 STRIPE_VERSION = "2025-06-30.basil"
 
+# The deployment environment may not ship the CA bundle used by opencode.ai
+# and billing.stripe.com. Match the working HTTP automation script and route
+# every request through an opener that does not verify the remote certificate.
+SSL_CONTEXT = ssl.create_default_context()
+SSL_CONTEXT.check_hostname = False
+SSL_CONTEXT.verify_mode = ssl.CERT_NONE
+HTTP_OPENER = urllib.request.build_opener(
+    urllib.request.HTTPSHandler(context=SSL_CONTEXT)
+)
+
 
 class ProtocolError(Exception):
     """协议执行失败。"""
+
+
+def open_url(request, timeout):
+    """Open an HTTPS request with the script's explicitly unverified context."""
+    return HTTP_OPENER.open(request, timeout=timeout)
 
 
 def _read_body(resp):
@@ -89,7 +105,7 @@ def fetch_go_page(auth, workspace_id, timeout=20):
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as resp:
+        with open_url(request, timeout) as resp:
             body = _read_body(resp)
             final_url = resp.geturl()
     except urllib.error.HTTPError as exc:
@@ -144,7 +160,7 @@ def create_portal_session(auth, workspace_id, timeout=20):
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as resp:
+        with open_url(request, timeout) as resp:
             text = _read_body(resp)
     except urllib.error.HTTPError as exc:
         raise ProtocolError(f"portal session 创建失败 HTTP {exc.code}") from exc
@@ -172,7 +188,7 @@ def parse_portal_page(portal_url, timeout=20):
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as resp:
+        with open_url(request, timeout) as resp:
             page = _read_body(resp)
     except urllib.error.HTTPError as exc:
         raise ProtocolError(f"portal 页面请求失败 HTTP {exc.code}") from exc
@@ -221,7 +237,7 @@ def get_subscription(session, timeout=20):
         headers=_stripe_headers(session, session["portal_url"]),
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as resp:
+        with open_url(request, timeout) as resp:
             data = json.loads(_read_body(resp))
     except urllib.error.HTTPError as exc:
         raise ProtocolError(f"订阅状态查询失败 HTTP {exc.code}: {exc.read()[:200]}") from exc
@@ -267,7 +283,7 @@ def cancel_subscription(session, sub_id, timeout=20):
         ),
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as resp:
+        with open_url(request, timeout) as resp:
             body = _read_body(resp)
             status = resp.status
     except urllib.error.HTTPError as exc:
@@ -315,7 +331,7 @@ def resume_subscription(session, sub_id, timeout=20):
         ),
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as resp:
+        with open_url(request, timeout) as resp:
             body = _read_body(resp)
             status = resp.status
     except urllib.error.HTTPError as exc:
@@ -539,5 +555,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-
 
