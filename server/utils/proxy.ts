@@ -8,10 +8,11 @@ import {
 } from './proxy-worker-pool'
 import { createProxyRequestLifecycle } from './proxy-request-lifecycle'
 import { createAccountFetch } from './account-fetch'
-import { selectAffinityAccountId } from './proxy-affinity'
+import { rankAffinityAccountIds } from './proxy-affinity'
 import { invalidateUpstreamApiKey, markAccountRiskControlled } from './accounts'
 import { createCallLog } from './call-logs'
 import { headersForLog, serializeLogPayload } from './log-payload'
+import { normalizeOpenAIChatRequestBody, ToolRequestValidationError } from './openai-tooling'
 
 const GO_BASE = 'https://opencode.ai/zen/go/v1'
 const ACCOUNT_ERROR_STATUSES = new Set([401, 403, 408, 409, 429])
@@ -27,7 +28,11 @@ const PROXY_MAX_WORKERS = Math.max(
 const PROXY_QUEUE_LIMIT = positiveInteger(process.env.PROXY_QUEUE_LIMIT, 8192)
 const PROXY_QUEUE_TIMEOUT_MS = positiveInteger(process.env.PROXY_QUEUE_TIMEOUT_MS, 30_000)
 const PROXY_UPSTREAM_TIMEOUT_MS = positiveInteger(process.env.PROXY_UPSTREAM_TIMEOUT_MS, 10 * 60_000)
-const PROXY_ACCOUNT_CONCURRENCY = positiveInteger(process.env.PROXY_ACCOUNT_CONCURRENCY, 2)
+const MAX_PROXY_ACCOUNT_CONCURRENCY = 5
+const PROXY_ACCOUNT_CONCURRENCY = Math.min(
+  MAX_PROXY_ACCOUNT_CONCURRENCY,
+  positiveInteger(process.env.PROXY_ACCOUNT_CONCURRENCY, MAX_PROXY_ACCOUNT_CONCURRENCY)
+)
 const proxyWorkers = new ProxyWorkerPool(PROXY_MIN_WORKERS, PROXY_QUEUE_LIMIT)
 const proxyWorkerController = new AdaptiveProxyWorkerController(proxyWorkers, {
   minWorkers: PROXY_MIN_WORKERS,
@@ -169,14 +174,12 @@ async function waitForAccountSlotAffinity(signal: AbortSignal, affinityKey: stri
   while (!signal.aborted) {
     const accounts = await getProxyCandidates()
     if (!accounts.length) return null
-    const affinityAccountId = selectAffinityAccountId(
-      affinityKey,
-      accounts.map(account => account.id)
-    )
-    const start = accounts.findIndex(account => account.id === affinityAccountId)
-    // Try affinity account first, then fall back to the rest in order
-    for (let attempt = 0; attempt < accounts.length; attempt++) {
-      const account = accounts[(Math.max(0, start) + attempt) % accounts.length]!
+    const accountById = new Map(accounts.map(account => [account.id, account]))
+    const rankedIds = rankAffinityAccountIds(affinityKey, accountById.keys())
+    // Preserve affinity while spreading a busy session over a deterministic
+    // account order as each account reaches its real-time slot limit.
+    for (const accountId of rankedIds) {
+      const account = accountById.get(accountId)!
       const release = await tryAcquireAccountProxySlot(
         account.id,
         PROXY_ACCOUNT_CONCURRENCY,
@@ -338,16 +341,30 @@ export async function proxyChatCompletions(
         return jsonError(400, 'Request body is required', 'invalid_request')
       }
 
+      let normalizedRequest: ReturnType<typeof normalizeOpenAIChatRequestBody>
+      try {
+        normalizedRequest = normalizeOpenAIChatRequestBody(body.toString())
+      } catch (error) {
+        if (error instanceof ToolRequestValidationError) {
+          logData.statusCode = 400
+          logData.errorMessage = error.message
+          logData.responseDetail = localResponseLogDetail(400, 'invalid_tool_definition', error.message)
+          return jsonError(400, error.message, 'invalid_tool_definition')
+        }
+        throw error
+      }
+      const upstreamRequestBody = normalizedRequest.body
+
       // Extract model name, stream flag, and affinity key from request body
       let affinityKey: string | null = null
-      try {
-        const requestData = JSON.parse(body.toString())
-        logData.modelName = requestData.model || null
+      if (normalizedRequest.parsed) {
+        const requestData = normalizedRequest.parsed
+        logData.modelName = typeof requestData.model === 'string' ? requestData.model : null
         logData.isStream = Boolean(requestData.stream)
         if (apiKeyInfo?.affinityEnabled) {
-          affinityKey = extractAffinityKey(body.toString())
+          affinityKey = extractAffinityKey(upstreamRequestBody)
         }
-      } catch {}
+      }
 
       const slot = affinityKey
         ? await waitForAccountSlotAffinity(upstreamSignal, affinityKey)
@@ -373,13 +390,15 @@ export async function proxyChatCompletions(
           upstream_url: `${GO_BASE}/chat/completions`,
           incoming_headers: headersForLog(event.node.req.headers || {}),
           upstream_headers: headersForLog(requestHeaders),
-          body: requestBody
+          body: upstreamRequestBody,
+          incoming_body: normalizedRequest.changed ? requestBody : undefined,
+          tooling_normalized: normalizedRequest.changed
         })
 
         const response = await fetchImpl(`${GO_BASE}/chat/completions`, {
           method: 'POST',
           headers: requestHeaders,
-          body,
+          body: upstreamRequestBody,
           signal: upstreamSignal
         })
 

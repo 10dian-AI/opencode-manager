@@ -1,24 +1,10 @@
 <script setup lang="ts">
 import type { TableColumn } from '@nuxt/ui'
-
-interface OperationLog {
-  id: number
-  operation: string
-  trigger_type: string
-  account_id: number | null
-  account_ids: string | null
-  status: string
-  detail: string | null
-  error_message: string | null
-  request_detail: string | null
-  response_detail: string | null
-  duration_ms: number | null
-  created_at: string
-}
+import type { OperationLog, OperationLogSummary } from '~~/server/utils/operation-log'
 
 const toast = useToast()
 const loading = ref(false)
-const logs = ref<OperationLog[]>([])
+const logs = ref<OperationLogSummary[]>([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = 50
@@ -52,7 +38,7 @@ const triggerLabelMap: Record<string, string> = {
   scheduled: '定时',
 }
 
-const columns: TableColumn<OperationLog>[] = [
+const columns: TableColumn<OperationLogSummary>[] = [
   { accessorKey: 'created_at', header: '时间' },
   { accessorKey: 'operation', header: '操作' },
   { accessorKey: 'trigger_type', header: '触发方式' },
@@ -76,12 +62,14 @@ async function fetchLogs() {
       offset: (page.value - 1) * pageSize
     }
     if (operationFilter.value) query.operation = operationFilter.value
-    const response = await $fetch<{ logs: OperationLog[]; total: number }>('/api/logs', {
+    const response = await $fetch<{ logs: OperationLogSummary[]; total: number }>('/api/logs', {
       query,
       signal: requestController.signal
     })
-    logs.value = response.logs
-    total.value = response.total
+    if (generation === requestGeneration) {
+      logs.value = response.logs
+      total.value = response.total
+    }
   } catch (error: any) {
     if (error?.name !== 'AbortError') {
       toast.add({
@@ -132,20 +120,50 @@ function formatLogPayload(value: string | null) {
   }
 }
 
-function logSummary(log: OperationLog) {
+function logSummary(log: OperationLogSummary) {
   return log.error_message || log.detail || (log.status === 'success' ? '操作成功，点击查看完整响应' : '点击查看完整日志')
 }
 
 const selectedLog = ref<OperationLog | null>(null)
 const detailDialogOpen = ref(false)
+const detailLoading = ref(false)
+const detailError = ref<string | null>(null)
+let detailController: AbortController | null = null
+let detailGeneration = 0
 
-function showDetail(log: OperationLog) {
-  selectedLog.value = log
+async function showDetail(log: OperationLogSummary) {
+  const generation = ++detailGeneration
+  detailController?.abort()
+  detailController = new AbortController()
+  selectedLog.value = { ...log, request_detail: null, response_detail: null }
   detailDialogOpen.value = true
+  detailLoading.value = true
+  detailError.value = null
+  try {
+    const detail = await $fetch<OperationLog>(`/api/logs/${log.id}`, {
+      signal: detailController.signal
+    })
+    if (generation === detailGeneration) selectedLog.value = detail
+  } catch (error: any) {
+    if (error?.name !== 'AbortError' && generation === detailGeneration) {
+      const message = error?.data?.statusMessage || error?.message || '获取操作详情失败'
+      detailError.value = message
+      toast.add({
+        title: '获取操作详情失败',
+        description: message,
+        color: 'error'
+      })
+    }
+  } finally {
+    if (generation === detailGeneration) detailLoading.value = false
+  }
 }
 
 onMounted(fetchLogs)
-onBeforeUnmount(() => requestController?.abort())
+onBeforeUnmount(() => {
+  requestController?.abort()
+  detailController?.abort()
+})
 watch(page, fetchLogs)
 </script>
 
@@ -210,7 +228,7 @@ watch(page, fetchLogs)
               {{ logSummary(row.original) }}
             </span>
             <UButton
-              v-if="row.original.error_message || row.original.detail || row.original.request_detail || row.original.response_detail"
+              v-if="row.original.error_message || row.original.detail || row.original.has_request_detail || row.original.has_response_detail"
               icon="i-lucide-file-search"
               color="neutral"
               variant="ghost"
@@ -259,14 +277,21 @@ watch(page, fetchLogs)
             <p class="mb-2 text-sm font-medium">详情</p>
             <pre class="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-default bg-elevated p-3 text-xs">{{ selectedLog.detail }}</pre>
           </div>
-          <div>
-            <p class="mb-2 text-sm font-medium">完整请求</p>
-            <pre class="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-default bg-elevated p-3 text-xs">{{ formatLogPayload(selectedLog.request_detail) }}</pre>
+          <div v-if="detailLoading" class="flex items-center gap-2 rounded-lg border border-default p-4 text-sm text-muted">
+            <UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" />
+            正在按需加载完整请求与响应…
           </div>
-          <div>
-            <p class="mb-2 text-sm font-medium">完整响应</p>
-            <pre class="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-default bg-elevated p-3 text-xs">{{ formatLogPayload(selectedLog.response_detail) }}</pre>
-          </div>
+          <UAlert v-else-if="detailError" color="error" variant="subtle" icon="i-lucide-circle-alert" title="详情加载失败" :description="detailError" />
+          <template v-else>
+            <div>
+              <p class="mb-2 text-sm font-medium">完整请求</p>
+              <pre class="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-default bg-elevated p-3 text-xs">{{ formatLogPayload(selectedLog.request_detail) }}</pre>
+            </div>
+            <div>
+              <p class="mb-2 text-sm font-medium">完整响应</p>
+              <pre class="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-default bg-elevated p-3 text-xs">{{ formatLogPayload(selectedLog.response_detail) }}</pre>
+            </div>
+          </template>
           <div v-if="selectedLog.error_message">
             <p class="mb-2 text-sm font-medium">错误信息</p>
             <pre class="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-error/20 bg-error/5 p-3 text-xs text-error">{{ selectedLog.error_message }}</pre>

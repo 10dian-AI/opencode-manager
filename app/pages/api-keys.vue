@@ -146,7 +146,7 @@ async function copy(value: string) {
       variant="subtle"
       icon="i-lucide-info"
       title="亲和路由说明"
-      description="开启亲和的密钥，会根据请求体中的 `user`（session_id）或 `metadata.prompt_cache_key` 字段，将同一会话的请求路由到同一账号，从而显著提升 prompt cache 命中率。"
+      description="开启后会根据请求体中的 `user`（session_id）或 `metadata.prompt_cache_key`，优先将同一会话路由到稳定账号；当该账号达到 5 个实时并发时，会按稳定顺序自动溢出到其他账号，兼顾缓存命中与负载均衡。"
     />
 
     <UCard class="ocm-card" :ui="{ body: 'p-0 sm:p-0' }">

@@ -24,6 +24,11 @@ export interface CallLog {
   created_at: string
 }
 
+export interface CallLogSummary extends Omit<CallLog, 'request_detail' | 'response_detail'> {
+  has_request_detail: boolean
+  has_response_detail: boolean
+}
+
 export async function createCallLog(log: Omit<CallLog, 'id' | 'created_at'>): Promise<void> {
   const client = await getDb()
   await client.query(
@@ -71,7 +76,7 @@ export interface CallLogQuery {
   offset?: number
 }
 
-export async function queryCallLogs(query: CallLogQuery): Promise<{ logs: CallLog[]; total: number }> {
+export async function queryCallLogs(query: CallLogQuery): Promise<{ logs: CallLogSummary[]; total: number }> {
   const client = await getDb()
 
   const conditions: string[] = []
@@ -149,12 +154,29 @@ export async function queryCallLogs(query: CallLogQuery): Promise<{ logs: CallLo
   paramCount++
   values.push(offset)
 
-  const logs = await client.query<CallLog>(
-    `SELECT * FROM call_logs ${whereClause} ORDER BY timestamp DESC LIMIT $${paramCount - 1} OFFSET $${paramCount}`,
+  const logs = await client.query<CallLogSummary>(
+    `SELECT
+       id, timestamp, api_key_id, api_key_prefix, model_name, account_id, account_name,
+       is_stream, prompt_tokens, completion_tokens, cached_prompt_tokens, created_prompt_tokens,
+       throughput, first_token_time_ms, response_time_ms, caller_ip, status_code, error_message,
+       created_at,
+       (request_detail IS NOT NULL AND request_detail <> '') AS has_request_detail,
+       (response_detail IS NOT NULL AND response_detail <> '') AS has_response_detail
+     FROM call_logs ${whereClause}
+     ORDER BY timestamp DESC LIMIT $${paramCount - 1} OFFSET $${paramCount}`,
     values
   )
 
   return { logs: logs.rows, total }
+}
+
+export async function getCallLogById(id: number): Promise<CallLog | undefined> {
+  const client = await getDb()
+  const result = await client.query<CallLog>(
+    `SELECT * FROM call_logs WHERE id = $1 LIMIT 1`,
+    [id]
+  )
+  return result.rows[0]
 }
 
 export async function deleteOldCallLogs(daysToKeep = 30): Promise<number> {

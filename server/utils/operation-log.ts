@@ -25,6 +25,15 @@ export interface OperationLog extends Omit<OperationLogEntry, 'request_detail' |
   created_at: string
 }
 
+export interface OperationLogSummary extends Omit<OperationLog, 'request_detail' | 'response_detail'> {
+  has_request_detail: boolean
+  has_response_detail: boolean
+}
+
+export type OperationLogWithAccounts<T extends OperationLog | OperationLogSummary> = T & {
+  account_ids_parsed: number[] | null
+}
+
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS operation_logs (
     id BIGSERIAL PRIMARY KEY,
@@ -106,7 +115,7 @@ export async function getOperationLogs(opts: {
   offset?: number
   operation?: string
   status?: string
-} = {}): Promise<Array<OperationLog & { account_ids_parsed: number[] | null }>> {
+} = {}): Promise<Array<OperationLogWithAccounts<OperationLogSummary>>> {
   await ensureSchema()
   const db = await getDb()
   const limit = Math.min(opts.limit ?? 50, 500)
@@ -122,14 +131,38 @@ export async function getOperationLogs(opts: {
     conditions.push(`status = $${values.length}`)
   }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
-  const { rows } = await db.query<OperationLog>(
-    `SELECT * FROM operation_logs ${where} ORDER BY id DESC LIMIT $1 OFFSET $2`,
+  const { rows } = await db.query<OperationLogSummary>(
+    `SELECT
+       id, operation, trigger_type, account_id, account_ids, status, detail, error_message,
+       blocked_at, duration_ms, created_at,
+       (request_detail IS NOT NULL AND request_detail <> '') AS has_request_detail,
+       (response_detail IS NOT NULL AND response_detail <> '') AS has_response_detail
+     FROM operation_logs ${where} ORDER BY id DESC LIMIT $1 OFFSET $2`,
     values
   )
   return rows.map(row => ({
     ...row,
     account_ids_parsed: row.account_ids ? (() => { try { return JSON.parse(row.account_ids) } catch { return null } })() : null
   }))
+}
+
+export async function getOperationLogById(
+  id: number
+): Promise<OperationLogWithAccounts<OperationLog> | undefined> {
+  await ensureSchema()
+  const db = await getDb()
+  const { rows } = await db.query<OperationLog>(
+    `SELECT * FROM operation_logs WHERE id = $1 LIMIT 1`,
+    [id]
+  )
+  const row = rows[0]
+  if (!row) return undefined
+  return {
+    ...row,
+    account_ids_parsed: row.account_ids
+      ? (() => { try { return JSON.parse(row.account_ids) } catch { return null } })()
+      : null
+  }
 }
 
 export async function countOperationLogs(opts: { operation?: string; status?: string } = {}): Promise<number> {
