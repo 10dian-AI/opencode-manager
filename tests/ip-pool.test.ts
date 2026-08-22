@@ -26,6 +26,9 @@ describe('IP pool proxy URLs', () => {
     expect(redactProxyUrl('http://user:secret@1.2.3.4:8080/')).toBe(
       'http://user:***@1.2.3.4:8080/'
     )
+    expect(redactProxyUrl('trojan://secret@example.com:443')).toBe(
+      'trojan://***@example.com:443'
+    )
   })
 })
 
@@ -85,5 +88,46 @@ describe('stable chunk assignment', () => {
       { accountId: 1, ipPoolId: 2 },
       { accountId: 2, ipPoolId: 2 }
     ])
+  })
+
+  test('never assigns accounts to nodes marked down', () => {
+    expect(planStableIpAssignments(
+      [{ id: 1, ip_pool_id: 1 }, { id: 2, ip_pool_id: null }],
+      [
+        { id: 1, enabled: true, health: 'down', region: 'HK' },
+        { id: 2, enabled: true, health: 'healthy', region: 'HK' }
+      ],
+      2
+    )).toEqual([
+      { accountId: 1, ipPoolId: 2 },
+      { accountId: 2, ipPoolId: 2 }
+    ])
+  })
+
+  test('moves accounts from a failed node to a healthy node in the same region first', () => {
+    expect(planStableIpAssignments(
+      [
+        { id: 1, ip_pool_id: 1 },
+        { id: 2, ip_pool_id: 3 }
+      ],
+      [
+        { id: 1, enabled: true, health: 'down', region: 'JP' },
+        { id: 2, enabled: true, health: 'healthy', region: 'JP' },
+        { id: 3, enabled: true, health: 'healthy', region: 'US' }
+      ],
+      5
+    )).toEqual([{ accountId: 1, ipPoolId: 2 }])
+  })
+
+  test('falls back to another region when no same-region node is healthy', () => {
+    expect(planStableIpAssignments(
+      [{ id: 1, ip_pool_id: 1 }],
+      [
+        { id: 1, enabled: true, health: 'down', region: 'HK' },
+        { id: 2, enabled: true, health: 'healthy', region: 'JP' },
+        { id: 3, enabled: true, health: 'healthy', region: 'US' }
+      ],
+      5
+    )).toEqual([{ accountId: 1, ipPoolId: 2 }])
   })
 })

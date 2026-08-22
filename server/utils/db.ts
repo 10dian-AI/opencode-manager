@@ -71,12 +71,40 @@ export interface IpPoolEntry {
   name: string | null
   proxy_url: string
   enabled: boolean
+  subscription_id: number | null
+  region: string | null
+  latency_ms: number | null
+  health: string
+  consecutive_over: number
   last_ip: string | null
   last_check_ok: boolean | null
   last_checked_at: string | null
   last_error: string | null
   created_at: string
   updated_at: string
+}
+
+export interface ProxySubscription {
+  id: number
+  name: string | null
+  url: string
+  enabled: boolean
+  last_fetched_at: string | null
+  last_node_count: number | null
+  last_error: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ProxySubscriptionNode {
+  id: number
+  subscription_id: number
+  name: string
+  protocol: string
+  uri: string
+  region: string | null
+  supported: boolean
+  unsupported_reason: string | null
 }
 
 export interface QueryResult<T> {
@@ -296,6 +324,32 @@ const SCHEMA_SQL = `
     value TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS proxy_subscriptions (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT,
+    url TEXT NOT NULL UNIQUE,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    last_fetched_at TIMESTAMPTZ,
+    last_node_count INTEGER,
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+
+  CREATE TABLE IF NOT EXISTS proxy_subscription_nodes (
+    id BIGSERIAL PRIMARY KEY,
+    subscription_id BIGINT NOT NULL REFERENCES proxy_subscriptions(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    protocol TEXT NOT NULL,
+    uri TEXT NOT NULL,
+    region TEXT,
+    supported BOOLEAN NOT NULL DEFAULT TRUE,
+    unsupported_reason TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_proxy_subscription_nodes_subscription
+    ON proxy_subscription_nodes(subscription_id);
+
   CREATE TABLE IF NOT EXISTS call_logs (
     id BIGSERIAL PRIMARY KEY,
     timestamp TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -383,6 +437,7 @@ async function initializeSchema(client: SqlClient) {
       FOREIGN KEY (ip_pool_id) REFERENCES ip_pool(id) ON DELETE SET NULL
     `)
     await migrateAccountsSchema(client)
+    await migrateIpPoolSchema(client)
     // 一次性回填抛弃账号标记（幂等，每次启动都会运行；手动标记的账号永不被动改）。
     // 注意：disabled_reason 可能为 NULL，(expr) IS TRUE 保证表达式永不返回 NULL，
     // 否则 `NULL OR FALSE = NULL` 会写进 NOT NULL 的 is_abandoned 列导致启动崩溃。
@@ -416,6 +471,28 @@ async function migrateAccountsSchema(client: SqlClient) {
   await client.query(`
     ALTER TABLE api_keys
       ADD COLUMN IF NOT EXISTS affinity_enabled BOOLEAN NOT NULL DEFAULT FALSE
+  `)
+}
+
+async function migrateIpPoolSchema(client: SqlClient) {
+  // Additive migration for the health/subscription columns; fresh installs get
+  // the same columns here (CREATE TABLE IF NOT EXISTS only covers new tables).
+  await client.query(`
+    ALTER TABLE ip_pool
+      ADD COLUMN IF NOT EXISTS subscription_id BIGINT,
+      ADD COLUMN IF NOT EXISTS region TEXT,
+      ADD COLUMN IF NOT EXISTS latency_ms INTEGER,
+      ADD COLUMN IF NOT EXISTS health TEXT NOT NULL DEFAULT 'unknown',
+      ADD COLUMN IF NOT EXISTS consecutive_over INTEGER NOT NULL DEFAULT 0
+  `)
+  await client.query(`
+    ALTER TABLE ip_pool
+      DROP CONSTRAINT IF EXISTS ip_pool_subscription_id_fkey
+  `)
+  await client.query(`
+    ALTER TABLE ip_pool
+      ADD CONSTRAINT ip_pool_subscription_id_fkey
+      FOREIGN KEY (subscription_id) REFERENCES proxy_subscriptions(id) ON DELETE SET NULL
   `)
 }
 
@@ -515,6 +592,27 @@ export function getDb(): Promise<SqlClient> {
   readyPromise = guarded
   return guarded
 }
+
+export async function withTransaction<T>(
+  callback: (client: SqlClient) => Promise<T>
+): Promise<T> {
+  await getDb()
+  if (!pool) throw new Error('Database pool is not initialized')
+
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const result = await callback(client)
+    await client.query('COMMIT')
+    return result
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
 export async function closeDb() {
   const current = pool
   const currentLocks = lockPool

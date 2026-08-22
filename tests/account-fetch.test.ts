@@ -93,13 +93,12 @@ function createAuthenticatedSocks5Server(onAuthenticated: () => void) {
 
 describe('account proxy transport', () => {
   test('tunnels fetch traffic through the configured authenticated HTTP proxy', async () => {
+    const targetPort = await listen(createServer((_request, response) => {
+      response.end('proxied')
+    }))
     let connectCount = 0
     let proxyAuthorization: string | undefined
-    const proxy = createServer((request, response) => {
-      connectCount++
-      proxyAuthorization = request.headers['proxy-authorization']
-      response.end('proxied')
-    })
+    const proxy = createServer()
     proxy.on('connect', (request, clientSocket, head) => {
       connectCount++
       proxyAuthorization = request.headers['proxy-authorization']
@@ -115,7 +114,7 @@ describe('account proxy transport', () => {
     const proxyPort = await listen(proxy)
 
     const fetchImpl = createProxyFetch(99, `http://user:pass@127.0.0.1:${proxyPort}`)
-    const response = await fetchImpl('http://proxy-target.invalid/probe')
+    const response = await fetchImpl(`http://127.0.0.1:${targetPort}/probe`)
     const responseBody = await response.text()
 
     expect(responseBody).toBe('proxied')

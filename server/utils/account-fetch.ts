@@ -6,8 +6,9 @@ import {
 import type { Account } from './db'
 import { getIpPoolEntry } from './ip-pool'
 import { createSocksProxyFetch } from './socks-fetch'
-
-declare const Bun: unknown | undefined
+import { createShadowsocksConnect, parseShadowsocksUrl } from './ss-transport'
+import { createTrojanConnect, parseTrojanUrl } from './trojan-transport'
+import { createTunnelFetch } from './tunnel-fetch'
 
 interface ProxyTransport {
   proxyUrl: string
@@ -46,16 +47,9 @@ function createSocksTransport(proxyUrl: string): ProxyTransport {
 }
 
 function createHttpTransport(proxyUrl: string): ProxyTransport {
-  if (typeof Bun !== 'undefined') {
-    return {
-      proxyUrl,
-      fetch: ((input: Parameters<typeof fetch>[0], init?: RequestInit) =>
-        fetch(input, { ...(init as any), proxy: proxyUrl })
-      ) as typeof fetch,
-      close: () => {}
-    }
-  }
-
+  // undici's ProxyAgent is used on every runtime (Node and Bun): it handles
+  // http:// and https:// proxies plus proxy auth consistently, whereas Bun's
+  // fetch({proxy}) has edge cases with https proxies and encoded credentials.
   const agent = new ProxyAgent(proxyUrl)
   return {
     proxyUrl,
@@ -64,10 +58,32 @@ function createHttpTransport(proxyUrl: string): ProxyTransport {
   }
 }
 
+function createTunnelTransport(proxyUrl: string): ProxyTransport {
+  const protocol = new URL(proxyUrl).protocol
+  if (protocol === 'ss:') {
+    parseShadowsocksUrl(proxyUrl) // fail fast on invalid config
+    return {
+      proxyUrl,
+      fetch: createTunnelFetch(createShadowsocksConnect(proxyUrl)),
+      close: () => {}
+    }
+  }
+  if (protocol === 'trojan:') {
+    parseTrojanUrl(proxyUrl)
+    return {
+      proxyUrl,
+      fetch: createTunnelFetch(createTrojanConnect(proxyUrl)),
+      close: () => {}
+    }
+  }
+  throw new Error(`Unsupported proxy protocol: ${protocol}`)
+}
+
 function buildProxyTransport(proxyUrl: string) {
-  return isSocksProxy(proxyUrl)
-    ? createSocksTransport(proxyUrl)
-    : createHttpTransport(proxyUrl)
+  const protocol = new URL(proxyUrl).protocol
+  if (isSocksProxy(proxyUrl)) return createSocksTransport(proxyUrl)
+  if (['ss:', 'trojan:'].includes(protocol)) return createTunnelTransport(proxyUrl)
+  return createHttpTransport(proxyUrl)
 }
 
 function fetchThroughProxy(proxyId: number, proxyUrl: string): typeof fetch {
